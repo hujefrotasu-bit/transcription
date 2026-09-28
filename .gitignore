@@ -1,0 +1,17 @@
+# Environment variables
+.env
+
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+
+# Test binary
+*.test
+
+# OS metadata
+.DS_Store
+Thumbs.db

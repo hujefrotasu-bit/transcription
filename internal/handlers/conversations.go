@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -142,9 +141,8 @@ func (h *ConversationHandler) UploadAudio(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	id := uuid.New()
-	savedFilename := fmt.Sprintf("%s_%s", id.String(), filepath.Base(header.Filename))
-	localFilePath := filepath.Join(uploadsDir, savedFilename)
+	cleanFilename := filepath.Base(header.Filename)
+	localFilePath := filepath.Join(uploadsDir, cleanFilename)
 
 	dst, err := os.Create(localFilePath)
 	if err != nil {
@@ -173,7 +171,7 @@ func (h *ConversationHandler) UploadAudio(w http.ResponseWriter, r *http.Request
 	defer savedAudioFile.Close()
 
 	// Transcribe via the injected service (Gemini under the hood).
-	transcript, err := h.TranscriptionService.Transcribe(r.Context(), savedAudioFile, header.Filename)
+	transcript, err := h.TranscriptionService.Transcribe(r.Context(), savedAudioFile, cleanFilename)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			log.Printf("UploadAudio: transcription cancelled/timed out: %v", err)
@@ -186,26 +184,65 @@ func (h *ConversationHandler) UploadAudio(w http.ResponseWriter, r *http.Request
 	}
 
 	if transcript == "" {
-		log.Printf("UploadAudio: empty transcript returned for %q", header.Filename)
+		log.Printf("UploadAudio: empty transcript returned for %q", cleanFilename)
 		http.Error(w, "Transcription returned an empty result", http.StatusUnprocessableEntity)
 		return
 	}
 
 	log.Printf("UploadAudio: transcription succeeded (%d chars), saving to database", len(transcript))
 
-	// Persist to PostgreSQL.
-	_, err = h.DB.Exec(
-		r.Context(),
-		`INSERT INTO conversations (id, transcript, status, audio_filename) VALUES ($1, $2, $3, $4)`,
-		id, transcript, "completed", header.Filename,
-	)
-	if err != nil {
-		log.Printf("UploadAudio: db insert error: %v", err)
-		http.Error(w, "Failed to save transcript", http.StatusInternalServerError)
+	// Check if a conversation with this audio filename already exists to replace it instead of duplicating.
+	var id uuid.UUID
+	var existing bool
+	err = h.DB.QueryRow(r.Context(),
+		`SELECT id FROM conversations WHERE audio_filename = $1 ORDER BY created_at DESC LIMIT 1`,
+		cleanFilename).Scan(&id)
+	if err == nil {
+		existing = true
+	} else if errors.Is(err, pgx.ErrNoRows) {
+		id = uuid.New()
+		existing = false
+	} else {
+		log.Printf("UploadAudio: db query error checking existing file: %v", err)
+		http.Error(w, "Failed to check existing conversation", http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("UploadAudio: saved conversation %s (audio: %s)", id, header.Filename)
+	if existing {
+		// Update existing conversation record.
+		_, err = h.DB.Exec(
+			r.Context(),
+			`UPDATE conversations SET transcript = $1, status = $2, created_at = NOW() WHERE id = $3`,
+			transcript, "completed", id,
+		)
+		if err != nil {
+			log.Printf("UploadAudio: db update error: %v", err)
+			http.Error(w, "Failed to update transcript", http.StatusInternalServerError)
+			return
+		}
+
+		// Delete old topics for this conversation so new topics replace them cleanly.
+		_, _ = h.DB.Exec(r.Context(), `DELETE FROM topics WHERE conversation_id = $1`, id)
+
+		// Remove any older duplicate conversation records with the same filename.
+		_, _ = h.DB.Exec(r.Context(), `DELETE FROM conversations WHERE audio_filename = $1 AND id != $2`, cleanFilename, id)
+
+		log.Printf("UploadAudio: replaced existing conversation %s (audio: %s)", id, cleanFilename)
+	} else {
+		// Persist new conversation to PostgreSQL.
+		_, err = h.DB.Exec(
+			r.Context(),
+			`INSERT INTO conversations (id, transcript, status, audio_filename) VALUES ($1, $2, $3, $4)`,
+			id, transcript, "completed", cleanFilename,
+		)
+		if err != nil {
+			log.Printf("UploadAudio: db insert error: %v", err)
+			http.Error(w, "Failed to save transcript", http.StatusInternalServerError)
+			return
+		}
+
+		log.Printf("UploadAudio: saved new conversation %s (audio: %s)", id, cleanFilename)
+	}
 
 	var extractedTopics []topics.Topic
 	if h.TopicService != nil {
@@ -223,7 +260,7 @@ func (h *ConversationHandler) UploadAudio(w http.ResponseWriter, r *http.Request
 		ID:            id.String(),
 		Status:        "completed",
 		Transcript:    transcript,
-		AudioFilename: &header.Filename,
+		AudioFilename: &cleanFilename,
 		Topics:        extractedTopics,
 	})
 }

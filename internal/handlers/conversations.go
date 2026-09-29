@@ -85,13 +85,18 @@ func (h *ConversationHandler) CreateConversation(w http.ResponseWriter, r *http.
 	if h.MinutesService != nil {
 		log.Printf("CreateConversation: extracting meeting minutes for conversation %s", id)
 		var mErr error
+		var namedTranscript string
 		extractCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		extractedMinutes, mErr = h.MinutesService.ExtractAndSaveMeetingMinutes(extractCtx, id, req.Transcript)
+		extractedMinutes, namedTranscript, mErr = h.MinutesService.ExtractAndSaveMeetingMinutes(extractCtx, id, req.Transcript)
 		if mErr != nil {
 			log.Printf("CreateConversation: meeting minutes extraction error for conversation %s: %v", id, mErr)
 		} else {
 			log.Printf("CreateConversation: saved meeting minutes for conversation %s", id)
+			if strings.TrimSpace(namedTranscript) != "" {
+				req.Transcript = namedTranscript
+				_, _ = h.DB.Exec(context.Background(), `UPDATE conversations SET transcript = $1 WHERE id = $2`, req.Transcript, id)
+			}
 		}
 	}
 
@@ -224,9 +229,8 @@ func (h *ConversationHandler) UploadAudio(w http.ResponseWriter, r *http.Request
 			return
 		}
 
-		// Delete old meeting_minutes and topics for this conversation so new MoM replaces them cleanly.
+		// Delete old meeting_minutes for this conversation so new MoM replaces them cleanly.
 		_, _ = h.DB.Exec(r.Context(), `DELETE FROM meeting_minutes WHERE conversation_id = $1`, id)
-		_, _ = h.DB.Exec(r.Context(), `DELETE FROM topics WHERE conversation_id = $1`, id)
 
 		// Remove any older duplicate conversation records with the same filename.
 		_, _ = h.DB.Exec(r.Context(), `DELETE FROM conversations WHERE audio_filename = $1 AND id != $2`, cleanFilename, id)
@@ -252,14 +256,18 @@ func (h *ConversationHandler) UploadAudio(w http.ResponseWriter, r *http.Request
 	if h.MinutesService != nil {
 		log.Printf("UploadAudio: extracting meeting minutes for conversation %s", id)
 		var mErr error
-		// Use a dedicated context with 2 minute timeout so client disconnect doesn't kill the background save.
+		var namedTranscript string
 		extractCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		extractedMinutes, mErr = h.MinutesService.ExtractAndSaveMeetingMinutes(extractCtx, id, transcript)
+		extractedMinutes, namedTranscript, mErr = h.MinutesService.ExtractAndSaveMeetingMinutes(extractCtx, id, transcript)
 		if mErr != nil {
 			log.Printf("UploadAudio: meeting minutes extraction error for conversation %s: %v", id, mErr)
 		} else {
 			log.Printf("UploadAudio: saved meeting minutes for conversation %s", id)
+			if strings.TrimSpace(namedTranscript) != "" {
+				transcript = namedTranscript
+				_, _ = h.DB.Exec(context.Background(), `UPDATE conversations SET transcript = $1 WHERE id = $2`, transcript, id)
+			}
 		}
 	}
 

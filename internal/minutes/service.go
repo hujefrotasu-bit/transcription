@@ -83,11 +83,17 @@ type MeetingMinutesRecord struct {
 	CreatedAt      time.Time      `json:"created_at"`
 }
 
+// ExtractionResult holds both the resolved named transcript and structured MoM.
+type ExtractionResult struct {
+	NamedTranscript string         `json:"named_transcript"`
+	MeetingMinutes  MeetingMinutes `json:"meeting_minutes"`
+}
+
 // MeetingMinutesService defines the contract for MoM extraction and persistence.
 type MeetingMinutesService interface {
-	ExtractMeetingMinutes(ctx context.Context, transcript string) (*MeetingMinutes, error)
+	ExtractMeetingMinutes(ctx context.Context, transcript string) (*MeetingMinutes, string, error)
 	SaveMeetingMinutes(ctx context.Context, conversationID uuid.UUID, mom *MeetingMinutes) (*MeetingMinutesRecord, error)
-	ExtractAndSaveMeetingMinutes(ctx context.Context, conversationID uuid.UUID, transcript string) (*MeetingMinutes, error)
+	ExtractAndSaveMeetingMinutes(ctx context.Context, conversationID uuid.UUID, transcript string) (*MeetingMinutes, string, error)
 }
 
 // GeminiService implements MeetingMinutesService using Google's Gemini Interactions API.
@@ -166,103 +172,98 @@ type interactionContent struct {
 // Extraction & Persistence Logic
 // ─────────────────────────────────────────────
 
-// ExtractMeetingMinutes sends the transcript to Gemini via the Interactions API and parses the structured MoM.
-func (s *GeminiService) ExtractMeetingMinutes(ctx context.Context, transcript string) (*MeetingMinutes, error) {
+// ExtractMeetingMinutes sends the transcript to Gemini, resolves speaker names in both transcript & MoM, and parses the structured result.
+func (s *GeminiService) ExtractMeetingMinutes(ctx context.Context, transcript string) (*MeetingMinutes, string, error) {
 	trimmedTranscript := strings.TrimSpace(transcript)
 	if trimmedTranscript == "" {
-		return nil, fmt.Errorf("transcript cannot be empty")
+		return nil, "", fmt.Errorf("transcript cannot be empty")
 	}
 
-	prompt := fmt.Sprintf(`Analyze the complete conversation transcript and generate structured Minutes of Meeting.
+	prompt := fmt.Sprintf(`You are an expert transcript and meeting minutes analyst.
 
-Extract meaningful information from the conversation and organize it into:
-- meeting details
-- attendees
-- agenda
-- discussion and key points
-- decisions taken
-- action items
-- risks/issues/dependencies
-- next meeting
+Analyze the complete conversation transcript where speakers may currently be labeled as "Speaker 1", "Speaker 2", etc.
 
-Preserve factual meaning from the transcript.
-Do not invent missing information.
-
-Return JSON ONLY using the exact requested structure:
-{
-  "meeting": {
-    "title": null,
-    "date": null,
-    "time": null,
-    "location": null,
-    "meeting_type": null
-  },
-  "attendees": [
-    {
-      "name": "...",
-      "designation": null
-    }
-  ],
-  "chairperson": null,
-  "minutes_prepared_by": null,
-  "agenda": [
-    "..."
-  ],
-  "discussion_points": [
-    {
-      "topic": "...",
-      "discussion": "..."
-    }
-  ],
-  "decisions": [
-    {
-      "decision": "...",
-      "remarks": "..."
-    }
-  ],
-  "action_items": [
-    {
-      "action_item": "...",
-      "owner": null,
-      "priority": null,
-      "due_date": null,
-      "status": "Pending"
-    }
-  ],
-  "risks_issues_dependencies": [
-    {
-      "issue": "...",
-      "owner": null,
-      "required_action": "..."
-    }
-  ],
-  "next_meeting": {
-    "date": null,
-    "time": null,
-    "agenda": null
-  }
-}
+TASKS:
+1. Identify the real names of speakers if their name is introduced, spoken, or confirmed in the dialogue (for example, if someone is greeted with "Hello is this Sarah?" and replies "Yes it is Sarah", then that speaker is "Sarah").
+2. If a speaker's real name is never mentioned or remains unknown, keep their label as "Speaker 1", "Speaker 2", etc.
+3. Replace speaker labels throughout the transcript with their identified names (e.g. replace "Speaker 2:" with "Sarah:"). Keep unknown speakers as "Speaker 1:".
+4. Generate structured Minutes of Meeting (MoM).
+   - In the "attendees" list, DO NOT list both a speaker number and their real name when they are the same person.
+   - Use their real name if known (e.g. "Sarah"), or their speaker label if unknown (e.g. "Speaker 1").
+   - Extract meaningful discussion points with topic and concise factual summary.
+   - Extract explicit decisions.
+   - Extract clear action items with owner, due date, and status.
+   - For any unstated metadata (location, time, priority, chairperson), strictly use null.
 
 IMPORTANT DATA RULES:
 1. NEVER invent information.
 2. If the transcript does not provide a meeting title, date, time, location, meeting type, designation, chairperson, or minutes preparer, return null.
 3. Do not infer an exact date from the current date.
 4. Do not invent attendees.
-5. Speaker labels such as "Speaker 1" and "Speaker 2" may be used when the actual person's name is unknown.
-6. Extract only meaningful discussion points. Do not turn every sentence into a discussion point.
-   Each discussion point should contain:
-   - topic
-   - concise factual summary of what was discussed
-7. Extract explicit decisions from the conversation. Only include decisions that were actually made or clearly agreed upon.
-8. Extract action items when the conversation contains a clear task/request/commitment, owner, due date, priority and status when supported by the transcript.
+5. Extract explicit decisions from the conversation. Only include decisions that were actually made or clearly agreed upon.
+6. Extract action items when the conversation contains a clear task/request/commitment, owner, due date, priority and status when supported by the transcript.
    - Do not confuse a general statement with an action item.
    - Only assign an owner when the transcript provides enough evidence.
    - Only assign a due date when the transcript explicitly provides one.
    - If priority is not discussed, return null.
    - If status is not discussed, use "Pending" only when an action item clearly exists and has not been completed. Otherwise use null.
-9. Do not create risks/issues/dependencies unless they are actually discussed.
-10. Do not create a next meeting unless the transcript discusses one.
-11. Return JSON ONLY using the exact requested structure. For unknown information, use null or an empty array as appropriate.
+7. Do not create risks/issues/dependencies unless they are actually discussed.
+8. Do not create a next meeting unless the transcript discusses one.
+9. Return JSON ONLY using the exact requested structure.
+
+Return JSON ONLY using this exact structure:
+{
+  "named_transcript": "Speaker 1: Hello, is this Sarah?\nSarah: Hello, yes it is Sarah.\n...",
+  "meeting_minutes": {
+    "meeting": {
+      "title": null,
+      "date": null,
+      "time": null,
+      "location": null,
+      "meeting_type": null
+    },
+    "attendees": [
+      {
+        "name": "Sarah",
+        "designation": null
+      },
+      {
+        "name": "Speaker 1",
+        "designation": null
+      }
+    ],
+    "chairperson": null,
+    "minutes_prepared_by": null,
+    "agenda": [],
+    "discussion_points": [
+      {
+        "topic": "...",
+        "discussion": "..."
+      }
+    ],
+    "decisions": [
+      {
+        "decision": "...",
+        "remarks": "..."
+      }
+    ],
+    "action_items": [
+      {
+        "action_item": "...",
+        "owner": null,
+        "priority": null,
+        "due_date": null,
+        "status": "Pending"
+      }
+    ],
+    "risks_issues_dependencies": [],
+    "next_meeting": {
+      "date": null,
+      "time": null,
+      "agenda": null
+    }
+  }
+}
 
 Transcript:
 %s`, trimmedTranscript)
@@ -278,7 +279,7 @@ Transcript:
 
 	reqBytes, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		return nil, "", fmt.Errorf("failed to marshal request: %w", err)
 	}
 
 	const apiURL = "https://generativelanguage.googleapis.com/v1beta/interactions"
@@ -291,7 +292,7 @@ Transcript:
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(reqBytes))
 		if err != nil {
-			return nil, fmt.Errorf("failed to create request: %w", err)
+			return nil, "", fmt.Errorf("failed to create request: %w", err)
 		}
 
 		req.Header.Set("x-goog-api-key", s.apiKey)
@@ -299,12 +300,11 @@ Transcript:
 
 		resp, err := s.httpClient.Do(req)
 		if err != nil {
-			// If context canceled or expired, return immediately.
 			if ctx.Err() != nil {
-				return nil, fmt.Errorf("gemini interactions request canceled: %w", ctx.Err())
+				return nil, "", fmt.Errorf("gemini interactions request canceled: %w", ctx.Err())
 			}
 			if attempt == maxRetries {
-				return nil, fmt.Errorf("gemini interactions request failed after %d retries: %w", maxRetries, err)
+				return nil, "", fmt.Errorf("gemini interactions request failed after %d retries: %w", maxRetries, err)
 			}
 			log.Printf("Gemini interactions request error (attempt %d/%d): %v, retrying in %v...", attempt+1, maxRetries, err, backoff)
 			time.Sleep(backoff)
@@ -315,7 +315,7 @@ Transcript:
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
-			return nil, fmt.Errorf("failed to read response body: %w", err)
+			return nil, "", fmt.Errorf("failed to read response body: %w", err)
 		}
 
 		if resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusTooManyRequests {
@@ -335,9 +335,9 @@ Transcript:
 				} `json:"error"`
 			}
 			if json.Unmarshal(body, &errResp) == nil && errResp.Error != nil {
-				return nil, fmt.Errorf("gemini API error (%v): %s", errResp.Error.Code, errResp.Error.Message)
+				return nil, "", fmt.Errorf("gemini API error (%v): %s", errResp.Error.Code, errResp.Error.Message)
 			}
-			return nil, fmt.Errorf("gemini API returned status %d: %s", resp.StatusCode, string(body))
+			return nil, "", fmt.Errorf("gemini API returned status %d: %s", resp.StatusCode, string(body))
 		}
 
 		respBody = body
@@ -346,11 +346,11 @@ Transcript:
 
 	var intResp interactionsResponse
 	if err = json.Unmarshal(respBody, &intResp); err != nil {
-		return nil, fmt.Errorf("failed to parse Gemini interactions response: %w", err)
+		return nil, "", fmt.Errorf("failed to parse Gemini interactions response: %w", err)
 	}
 
 	if intResp.Error != nil {
-		return nil, fmt.Errorf("gemini API error (%v): %s", intResp.Error.Code, intResp.Error.Message)
+		return nil, "", fmt.Errorf("gemini API error (%v): %s", intResp.Error.Code, intResp.Error.Message)
 	}
 
 	// Extract generated text from steps[].content[].text or output_text
@@ -371,7 +371,7 @@ Transcript:
 	}
 
 	if rawJSON == "" {
-		return nil, fmt.Errorf("no meeting minutes text returned by Gemini interactions API")
+		return nil, "", fmt.Errorf("no meeting minutes text returned by Gemini interactions API")
 	}
 
 	rawJSON = strings.TrimPrefix(rawJSON, "```json")
@@ -379,10 +379,19 @@ Transcript:
 	rawJSON = strings.TrimSuffix(rawJSON, "```")
 	rawJSON = strings.TrimSpace(rawJSON)
 
-	var mom MeetingMinutes
-	if err = json.Unmarshal([]byte(rawJSON), &mom); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal meeting minutes JSON: %w (raw: %s)", err, rawJSON)
+	var result ExtractionResult
+	if err = json.Unmarshal([]byte(rawJSON), &result); err != nil {
+		// Fallback check if response directly contains MeetingMinutes root object
+		var directMoM MeetingMinutes
+		if directErr := json.Unmarshal([]byte(rawJSON), &directMoM); directErr == nil {
+			result.MeetingMinutes = directMoM
+			result.NamedTranscript = trimmedTranscript
+		} else {
+			return nil, "", fmt.Errorf("failed to unmarshal meeting minutes JSON: %w (raw: %s)", err, rawJSON)
+		}
 	}
+
+	mom := &result.MeetingMinutes
 
 	// Ensure slice fields are non-nil for JSON array serialization consistency
 	if mom.Attendees == nil {
@@ -404,7 +413,12 @@ Transcript:
 		mom.RisksIssuesDependencies = []RiskIssueDependency{}
 	}
 
-	return &mom, nil
+	finalTranscript := strings.TrimSpace(result.NamedTranscript)
+	if finalTranscript == "" {
+		finalTranscript = trimmedTranscript
+	}
+
+	return mom, finalTranscript, nil
 }
 
 // SaveMeetingMinutes persists extracted Minutes of Meeting into the meeting_minutes table with the given conversation_id.
@@ -441,17 +455,17 @@ func (s *GeminiService) SaveMeetingMinutes(ctx context.Context, conversationID u
 	}, nil
 }
 
-// ExtractAndSaveMeetingMinutes coordinates MoM extraction and database insertion for a conversation.
-func (s *GeminiService) ExtractAndSaveMeetingMinutes(ctx context.Context, conversationID uuid.UUID, transcript string) (*MeetingMinutes, error) {
-	mom, err := s.ExtractMeetingMinutes(ctx, transcript)
+// ExtractAndSaveMeetingMinutes coordinates MoM extraction, transcript name resolution, and database insertion.
+func (s *GeminiService) ExtractAndSaveMeetingMinutes(ctx context.Context, conversationID uuid.UUID, transcript string) (*MeetingMinutes, string, error) {
+	mom, namedTranscript, err := s.ExtractMeetingMinutes(ctx, transcript)
 	if err != nil {
-		return nil, fmt.Errorf("extract meeting minutes: %w", err)
+		return nil, "", fmt.Errorf("extract meeting minutes: %w", err)
 	}
 
 	_, err = s.SaveMeetingMinutes(ctx, conversationID, mom)
 	if err != nil {
-		return nil, fmt.Errorf("save meeting minutes: %w", err)
+		return nil, "", fmt.Errorf("save meeting minutes: %w", err)
 	}
 
-	return mom, nil
+	return mom, namedTranscript, nil
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -157,6 +158,51 @@ Transcript:
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
+	const maxAttempts = 3
+	var lastErr error
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		topics, err := s.callInteractions(ctx, reqBytes)
+		if err == nil {
+			return topics, nil
+		}
+		lastErr = err
+
+		if !isRetryable(err) || attempt == maxAttempts {
+			break
+		}
+
+		backoff := time.Duration(attempt) * 1500 * time.Millisecond
+		log.Printf("ExtractTopics: Gemini transient error on attempt %d/%d (%v); retrying in %v...", attempt, maxAttempts, err, backoff)
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(backoff):
+		}
+	}
+
+	return nil, lastErr
+}
+
+func isRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "service_unavailable") ||
+		strings.Contains(msg, "high demand") ||
+		strings.Contains(msg, "spikes in demand") ||
+		strings.Contains(msg, "status 503") ||
+		strings.Contains(msg, "status 429") ||
+		strings.Contains(msg, "status 502") ||
+		strings.Contains(msg, "status 504") ||
+		strings.Contains(msg, "rate limit") ||
+		strings.Contains(msg, "resource_exhausted") ||
+		strings.Contains(msg, "temporarily")
+}
+
+func (s *GeminiService) callInteractions(ctx context.Context, reqBytes []byte) ([]ExtractedTopic, error) {
 	const apiURL = "https://generativelanguage.googleapis.com/v1beta/interactions"
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(reqBytes))

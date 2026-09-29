@@ -33,10 +33,11 @@ type createConversationRequest struct {
 }
 
 type conversationResponse struct {
-	ID         string         `json:"id"`
-	Status     string         `json:"status"`
-	Transcript string         `json:"transcript,omitempty"`
-	Topics     []topics.Topic `json:"topics,omitempty"`
+	ID            string         `json:"id"`
+	Status        string         `json:"status"`
+	Transcript    string         `json:"transcript,omitempty"`
+	AudioFilename *string        `json:"audio_filename,omitempty"`
+	Topics        []topics.Topic `json:"topics,omitempty"`
 }
 
 // HandleConversations routes GET to GetConversations and POST to CreateConversation.
@@ -154,8 +155,8 @@ func (h *ConversationHandler) UploadAudio(w http.ResponseWriter, r *http.Request
 	id := uuid.New()
 	_, err = h.DB.Exec(
 		r.Context(),
-		`INSERT INTO conversations (id, transcript, status) VALUES ($1, $2, $3)`,
-		id, transcript, "completed",
+		`INSERT INTO conversations (id, transcript, status, audio_filename) VALUES ($1, $2, $3, $4)`,
+		id, transcript, "completed", header.Filename,
 	)
 	if err != nil {
 		log.Printf("UploadAudio: db insert error: %v", err)
@@ -163,7 +164,7 @@ func (h *ConversationHandler) UploadAudio(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	log.Printf("UploadAudio: saved conversation %s", id)
+	log.Printf("UploadAudio: saved conversation %s (audio: %s)", id, header.Filename)
 
 	var extractedTopics []topics.Topic
 	if h.TopicService != nil {
@@ -178,20 +179,22 @@ func (h *ConversationHandler) UploadAudio(w http.ResponseWriter, r *http.Request
 	}
 
 	writeJSON(w, http.StatusCreated, conversationResponse{
-		ID:         id.String(),
-		Status:     "completed",
-		Transcript: transcript,
-		Topics:     extractedTopics,
+		ID:            id.String(),
+		Status:        "completed",
+		Transcript:    transcript,
+		AudioFilename: &header.Filename,
+		Topics:        extractedTopics,
 	})
 }
 
 // ConversationDetail represents a complete conversation with its associated topics.
 type ConversationDetail struct {
-	ID         uuid.UUID      `json:"id"`
-	Status     string         `json:"status"`
-	Transcript string         `json:"transcript"`
-	CreatedAt  time.Time      `json:"created_at"`
-	Topics     []topics.Topic `json:"topics"`
+	ID            uuid.UUID      `json:"id"`
+	Status        string         `json:"status"`
+	Transcript    string         `json:"transcript"`
+	AudioFilename *string        `json:"audio_filename"`
+	CreatedAt     time.Time      `json:"created_at"`
+	Topics        []topics.Topic `json:"topics"`
 }
 
 type errorResponse struct {
@@ -209,7 +212,7 @@ func (h *ConversationHandler) GetConversations(w http.ResponseWriter, r *http.Re
 	}
 
 	convRows, err := h.DB.Query(r.Context(),
-		`SELECT id, status, transcript, created_at 
+		`SELECT id, status, transcript, audio_filename, created_at 
 		 FROM conversations 
 		 ORDER BY created_at DESC`)
 	if err != nil {
@@ -224,7 +227,7 @@ func (h *ConversationHandler) GetConversations(w http.ResponseWriter, r *http.Re
 
 	for convRows.Next() {
 		var c ConversationDetail
-		if err := convRows.Scan(&c.ID, &c.Status, &c.Transcript, &c.CreatedAt); err != nil {
+		if err := convRows.Scan(&c.ID, &c.Status, &c.Transcript, &c.AudioFilename, &c.CreatedAt); err != nil {
 			log.Printf("GetConversations: scan error: %v", err)
 			writeJSONError(w, http.StatusInternalServerError, "Failed to parse conversations")
 			return
@@ -306,10 +309,10 @@ func (h *ConversationHandler) GetConversationByID(w http.ResponseWriter, r *http
 
 	var c ConversationDetail
 	err = h.DB.QueryRow(r.Context(),
-		`SELECT id, status, transcript, created_at 
+		`SELECT id, status, transcript, audio_filename, created_at 
 		 FROM conversations 
 		 WHERE id = $1`,
-		convID).Scan(&c.ID, &c.Status, &c.Transcript, &c.CreatedAt)
+		convID).Scan(&c.ID, &c.Status, &c.Transcript, &c.AudioFilename, &c.CreatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeJSONError(w, http.StatusNotFound, "Conversation not found")

@@ -16,7 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"transcript/internal/topics"
+	"transcript/internal/minutes"
 	"transcript/internal/transcription"
 )
 
@@ -24,11 +24,11 @@ import (
 type ConversationHandler struct {
 	DB                   *pgxpool.Pool
 	TranscriptionService transcription.TranscriptionService
-	TopicService         topics.TopicService
+	MinutesService       minutes.MeetingMinutesService
 }
 
 // ─────────────────────────────────────────────
-// POST /api/conversations  (existing JSON endpoint — unchanged)
+// POST /api/conversations  (existing JSON endpoint)
 // ─────────────────────────────────────────────
 
 type createConversationRequest struct {
@@ -36,11 +36,11 @@ type createConversationRequest struct {
 }
 
 type conversationResponse struct {
-	ID            string         `json:"id"`
-	Status        string         `json:"status"`
-	Transcript    string         `json:"transcript,omitempty"`
-	AudioFilename *string        `json:"audio_filename,omitempty"`
-	Topics        []topics.Topic `json:"topics,omitempty"`
+	ID             string                  `json:"id"`
+	Status         string                  `json:"status"`
+	Transcript     string                  `json:"transcript,omitempty"`
+	AudioFilename  *string                 `json:"audio_filename,omitempty"`
+	MeetingMinutes *minutes.MeetingMinutes `json:"meeting_minutes"`
 }
 
 // HandleConversations routes GET to GetConversations and POST to CreateConversation.
@@ -81,22 +81,25 @@ func (h *ConversationHandler) CreateConversation(w http.ResponseWriter, r *http.
 
 	log.Printf("CreateConversation: saved conversation %s", id)
 
-	var extractedTopics []topics.Topic
-	if h.TopicService != nil {
-		log.Printf("CreateConversation: extracting topics for conversation %s", id)
-		var tErr error
-		extractedTopics, tErr = h.TopicService.ExtractAndSave(context.Background(), id, req.Transcript)
-		if tErr != nil {
-			log.Printf("CreateConversation: topic extraction error for conversation %s: %v", id, tErr)
+	var extractedMinutes *minutes.MeetingMinutes
+	if h.MinutesService != nil {
+		log.Printf("CreateConversation: extracting meeting minutes for conversation %s", id)
+		var mErr error
+		extractCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		extractedMinutes, mErr = h.MinutesService.ExtractAndSaveMeetingMinutes(extractCtx, id, req.Transcript)
+		if mErr != nil {
+			log.Printf("CreateConversation: meeting minutes extraction error for conversation %s: %v", id, mErr)
 		} else {
-			log.Printf("CreateConversation: saved %d topics for conversation %s", len(extractedTopics), id)
+			log.Printf("CreateConversation: saved meeting minutes for conversation %s", id)
 		}
 	}
 
 	writeJSON(w, http.StatusCreated, conversationResponse{
-		ID:     id.String(),
-		Status: "processing",
-		Topics: extractedTopics,
+		ID:             id.String(),
+		Status:         "processing",
+		Transcript:     req.Transcript,
+		MeetingMinutes: extractedMinutes,
 	})
 }
 
@@ -221,7 +224,8 @@ func (h *ConversationHandler) UploadAudio(w http.ResponseWriter, r *http.Request
 			return
 		}
 
-		// Delete old topics for this conversation so new topics replace them cleanly.
+		// Delete old meeting_minutes and topics for this conversation so new MoM replaces them cleanly.
+		_, _ = h.DB.Exec(r.Context(), `DELETE FROM meeting_minutes WHERE conversation_id = $1`, id)
 		_, _ = h.DB.Exec(r.Context(), `DELETE FROM topics WHERE conversation_id = $1`, id)
 
 		// Remove any older duplicate conversation records with the same filename.
@@ -244,35 +248,38 @@ func (h *ConversationHandler) UploadAudio(w http.ResponseWriter, r *http.Request
 		log.Printf("UploadAudio: saved new conversation %s (audio: %s)", id, cleanFilename)
 	}
 
-	var extractedTopics []topics.Topic
-	if h.TopicService != nil {
-		log.Printf("UploadAudio: extracting topics for conversation %s", id)
-		var tErr error
-		extractedTopics, tErr = h.TopicService.ExtractAndSave(r.Context(), id, transcript)
-		if tErr != nil {
-			log.Printf("UploadAudio: topic extraction error for conversation %s: %v", id, tErr)
+	var extractedMinutes *minutes.MeetingMinutes
+	if h.MinutesService != nil {
+		log.Printf("UploadAudio: extracting meeting minutes for conversation %s", id)
+		var mErr error
+		// Use a dedicated context with 2 minute timeout so client disconnect doesn't kill the background save.
+		extractCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		extractedMinutes, mErr = h.MinutesService.ExtractAndSaveMeetingMinutes(extractCtx, id, transcript)
+		if mErr != nil {
+			log.Printf("UploadAudio: meeting minutes extraction error for conversation %s: %v", id, mErr)
 		} else {
-			log.Printf("UploadAudio: saved %d topics for conversation %s", len(extractedTopics), id)
+			log.Printf("UploadAudio: saved meeting minutes for conversation %s", id)
 		}
 	}
 
 	writeJSON(w, http.StatusCreated, conversationResponse{
-		ID:            id.String(),
-		Status:        "completed",
-		Transcript:    transcript,
-		AudioFilename: &cleanFilename,
-		Topics:        extractedTopics,
+		ID:             id.String(),
+		Status:         "completed",
+		Transcript:     transcript,
+		AudioFilename:  &cleanFilename,
+		MeetingMinutes: extractedMinutes,
 	})
 }
 
-// ConversationDetail represents a complete conversation with its associated topics.
+// ConversationDetail represents a complete conversation with its associated meeting minutes.
 type ConversationDetail struct {
-	ID            uuid.UUID      `json:"id"`
-	Status        string         `json:"status"`
-	Transcript    string         `json:"transcript"`
-	AudioFilename *string        `json:"audio_filename"`
-	CreatedAt     time.Time      `json:"created_at"`
-	Topics        []topics.Topic `json:"topics"`
+	ID             uuid.UUID               `json:"id"`
+	Status         string                  `json:"status"`
+	Transcript     string                  `json:"transcript"`
+	AudioFilename  *string                 `json:"audio_filename"`
+	CreatedAt      time.Time               `json:"created_at"`
+	MeetingMinutes *minutes.MeetingMinutes `json:"meeting_minutes"`
 }
 
 type errorResponse struct {
@@ -310,7 +317,7 @@ func (h *ConversationHandler) GetConversations(w http.ResponseWriter, r *http.Re
 			writeJSONError(w, http.StatusInternalServerError, "Failed to parse conversations")
 			return
 		}
-		c.Topics = []topics.Topic{}
+		c.MeetingMinutes = nil
 		conversations = append(conversations, c)
 		convIDs = append(convIDs, c.ID)
 	}
@@ -325,33 +332,36 @@ func (h *ConversationHandler) GetConversations(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	topicRows, err := h.DB.Query(r.Context(),
-		`SELECT id, conversation_id, title, summary, created_at 
-		 FROM topics 
-		 WHERE conversation_id = ANY($1) 
-		 ORDER BY created_at ASC`,
+	// Fetch meeting minutes for these conversations
+	minutesRows, err := h.DB.Query(r.Context(),
+		`SELECT conversation_id, data 
+		 FROM meeting_minutes 
+		 WHERE conversation_id = ANY($1)`,
 		convIDs)
 	if err != nil {
-		log.Printf("GetConversations: topic query error: %v", err)
-		writeJSONError(w, http.StatusInternalServerError, "Failed to retrieve topics")
+		log.Printf("GetConversations: meeting minutes query error: %v", err)
+		writeJSONError(w, http.StatusInternalServerError, "Failed to retrieve meeting minutes")
 		return
 	}
-	defer topicRows.Close()
+	defer minutesRows.Close()
 
-	topicsByConvID := make(map[uuid.UUID][]topics.Topic)
-	for topicRows.Next() {
-		var t topics.Topic
-		if err := topicRows.Scan(&t.ID, &t.ConversationID, &t.Title, &t.Summary, &t.CreatedAt); err != nil {
-			log.Printf("GetConversations: topic scan error: %v", err)
-			writeJSONError(w, http.StatusInternalServerError, "Failed to parse topics")
-			return
+	minutesByConvID := make(map[uuid.UUID]*minutes.MeetingMinutes)
+	for minutesRows.Next() {
+		var convID uuid.UUID
+		var rawData []byte
+		if err := minutesRows.Scan(&convID, &rawData); err != nil {
+			log.Printf("GetConversations: minutes scan error: %v", err)
+			continue
 		}
-		topicsByConvID[t.ConversationID] = append(topicsByConvID[t.ConversationID], t)
+		var mom minutes.MeetingMinutes
+		if err := json.Unmarshal(rawData, &mom); err == nil {
+			minutesByConvID[convID] = &mom
+		}
 	}
 
 	for i := range conversations {
-		if tList, ok := topicsByConvID[conversations[i].ID]; ok {
-			conversations[i].Topics = tList
+		if mom, ok := minutesByConvID[conversations[i].ID]; ok {
+			conversations[i].MeetingMinutes = mom
 		}
 	}
 
@@ -401,29 +411,19 @@ func (h *ConversationHandler) GetConversationByID(w http.ResponseWriter, r *http
 		return
 	}
 
-	c.Topics = []topics.Topic{}
+	c.MeetingMinutes = nil
 
-	topicRows, err := h.DB.Query(r.Context(),
-		`SELECT id, conversation_id, title, summary, created_at 
-		 FROM topics 
-		 WHERE conversation_id = $1 
-		 ORDER BY created_at ASC`,
-		convID)
-	if err != nil {
-		log.Printf("GetConversationByID: topic query error: %v", err)
-		writeJSONError(w, http.StatusInternalServerError, "Failed to retrieve topics")
-		return
-	}
-	defer topicRows.Close()
-
-	for topicRows.Next() {
-		var t topics.Topic
-		if err := topicRows.Scan(&t.ID, &t.ConversationID, &t.Title, &t.Summary, &t.CreatedAt); err != nil {
-			log.Printf("GetConversationByID: topic scan error: %v", err)
-			writeJSONError(w, http.StatusInternalServerError, "Failed to parse topics")
-			return
+	var rawMinutes []byte
+	err = h.DB.QueryRow(r.Context(),
+		`SELECT data FROM meeting_minutes WHERE conversation_id = $1`,
+		convID).Scan(&rawMinutes)
+	if err == nil {
+		var mom minutes.MeetingMinutes
+		if err := json.Unmarshal(rawMinutes, &mom); err == nil {
+			c.MeetingMinutes = &mom
 		}
-		c.Topics = append(c.Topics, t)
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		log.Printf("GetConversationByID: minutes query error: %v", err)
 	}
 
 	writeJSON(w, http.StatusOK, c)

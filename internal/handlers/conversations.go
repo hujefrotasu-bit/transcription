@@ -4,8 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -130,8 +134,46 @@ func (h *ConversationHandler) UploadAudio(w http.ResponseWriter, r *http.Request
 
 	log.Printf("UploadAudio: received %q (%d bytes), starting transcription", header.Filename, header.Size)
 
+	// Ensure local uploads directory exists.
+	uploadsDir := "uploads"
+	if err := os.MkdirAll(uploadsDir, 0755); err != nil {
+		log.Printf("UploadAudio: failed to create uploads directory: %v", err)
+		http.Error(w, "Failed to create uploads directory", http.StatusInternalServerError)
+		return
+	}
+
+	id := uuid.New()
+	savedFilename := fmt.Sprintf("%s_%s", id.String(), filepath.Base(header.Filename))
+	localFilePath := filepath.Join(uploadsDir, savedFilename)
+
+	dst, err := os.Create(localFilePath)
+	if err != nil {
+		log.Printf("UploadAudio: failed to create local audio file: %v", err)
+		http.Error(w, "Failed to save audio file locally", http.StatusInternalServerError)
+		return
+	}
+
+	if _, err := io.Copy(dst, file); err != nil {
+		dst.Close()
+		log.Printf("UploadAudio: failed to write local audio file: %v", err)
+		http.Error(w, "Failed to save audio file locally", http.StatusInternalServerError)
+		return
+	}
+	dst.Close()
+
+	log.Printf("UploadAudio: saved audio file locally to %s", localFilePath)
+
+	// Open the saved local file for transcription.
+	savedAudioFile, err := os.Open(localFilePath)
+	if err != nil {
+		log.Printf("UploadAudio: failed to open saved audio file: %v", err)
+		http.Error(w, "Failed to read saved audio file", http.StatusInternalServerError)
+		return
+	}
+	defer savedAudioFile.Close()
+
 	// Transcribe via the injected service (Gemini under the hood).
-	transcript, err := h.TranscriptionService.Transcribe(r.Context(), file, header.Filename)
+	transcript, err := h.TranscriptionService.Transcribe(r.Context(), savedAudioFile, header.Filename)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			log.Printf("UploadAudio: transcription cancelled/timed out: %v", err)
@@ -152,7 +194,6 @@ func (h *ConversationHandler) UploadAudio(w http.ResponseWriter, r *http.Request
 	log.Printf("UploadAudio: transcription succeeded (%d chars), saving to database", len(transcript))
 
 	// Persist to PostgreSQL.
-	id := uuid.New()
 	_, err = h.DB.Exec(
 		r.Context(),
 		`INSERT INTO conversations (id, transcript, status, audio_filename) VALUES ($1, $2, $3, $4)`,

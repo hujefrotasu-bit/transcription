@@ -6,10 +6,9 @@ import (
 
 	"github.com/joho/godotenv"
 
-	"transcript/internal/database"
-	"transcript/internal/handlers"
-	"transcript/internal/minutes"
-	"transcript/internal/transcription"
+	"transcript/database"
+	"transcript/routes"
+	"transcript/transcription"
 )
 
 func main() {
@@ -26,34 +25,32 @@ func main() {
 	defer db.Close()
 	log.Println("Connected to PostgreSQL!")
 
-	// Initialise the Gemini transcription service.
-	svc, err := transcription.NewGeminiService()
+	// 1. Initialise the Gemini audio transcription service.
+	audioSvc, err := transcription.NewGeminiTranscriptionService()
 	if err != nil {
-		log.Fatal("Failed to initialise transcription service:", err)
+		log.Fatal("Failed to initialise audio transcription service:", err)
 	}
-	log.Println("Transcription service ready (model:", svc.Model(), ")")
+	log.Println("Transcription service ready (model:", audioSvc.Model(), ")")
 
-	// Initialise the Gemini Minutes of Meeting service.
-	minutesSvc, err := minutes.NewGeminiService(db)
+	// 2. Initialise the Gemini Minutes of Meeting service.
+	momSvc, err := transcription.NewGeminiMeetingMinutesService(db)
 	if err != nil {
 		log.Fatal("Failed to initialise meeting minutes service:", err)
 	}
-	log.Println("Meeting minutes service ready (model:", minutesSvc.Model(), ")")
+	log.Println("Meeting minutes service ready (model:", momSvc.Model(), ")")
 
-	// Wire up handler with DB + transcription + meeting minutes services.
-	conversationHandler := &handlers.ConversationHandler{
+	// 3. Wire up handler with DB + transcription + meeting minutes services.
+	conversationHandler := &transcription.ConversationHandler{
 		DB:                   db,
-		TranscriptionService: svc,
-		MinutesService:       minutesSvc,
+		TranscriptionService: audioSvc,
+		MinutesService:       momSvc,
 	}
 
-	// Routes.
-	http.HandleFunc("/api/conversations", conversationHandler.HandleConversations)
-	http.HandleFunc("/api/conversations/", conversationHandler.GetConversationByID)
-	http.HandleFunc("/api/conversations/audio", conversationHandler.UploadAudio)
+	// 4. Initialise HTTP API routes using dedicated ServeMux.
+	router := routes.NewRouter(conversationHandler)
 
 	log.Println("Server running on http://localhost:8080")
-	if err = http.ListenAndServe(":8080", nil); err != nil {
+	if err = http.ListenAndServe(":8080", router); err != nil {
 		log.Fatal(err)
 	}
 }

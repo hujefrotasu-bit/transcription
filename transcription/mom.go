@@ -1,4 +1,4 @@
-package minutes
+package transcription
 
 import (
 	"bytes"
@@ -132,7 +132,7 @@ type MeetingMinutesService interface {
 }
 
 // GeminiService implements MeetingMinutesService using Google's Gemini Interactions API.
-type GeminiService struct {
+type GeminiMeetingMinutesService struct {
 	apiKey     string
 	model      string
 	db         *pgxpool.Pool
@@ -141,7 +141,7 @@ type GeminiService struct {
 
 // NewGeminiService creates a new GeminiService with the given PostgreSQL connection pool.
 // Reads GEMINI_API_KEY from environment, and optionally GEMINI_TOPIC_MODEL (defaults to gemini-3.5-flash-lite).
-func NewGeminiService(db *pgxpool.Pool) (*GeminiService, error) {
+func NewGeminiMeetingMinutesService(db *pgxpool.Pool) (*GeminiMeetingMinutesService, error) {
 	key := os.Getenv("GEMINI_API_KEY")
 	if key == "" {
 		return nil, fmt.Errorf("GEMINI_API_KEY is not set")
@@ -152,53 +152,56 @@ func NewGeminiService(db *pgxpool.Pool) (*GeminiService, error) {
 		model = "gemini-3.5-flash-lite"
 	}
 
-	return &GeminiService{
-		apiKey: key,
-		model:  model,
-		db:     db,
-		httpClient: &http.Client{
-			Timeout: 2 * time.Minute,
-		},
+	return &GeminiMeetingMinutesService{
+		apiKey:     key,
+		model:      model,
+		db:         db,
+		httpClient: &http.Client{Timeout: 5 * time.Minute},
 	}, nil
 }
 
-// Model returns the Gemini model currently configured for MoM extraction.
-func (s *GeminiService) Model() string {
+// Model returns the Gemini model name in use for meeting minutes.
+func (s *GeminiMeetingMinutesService) Model() string {
 	return s.model
 }
 
 // ─────────────────────────────────────────────
-// Gemini Interactions API request & response types
+// Gemini Interactions API Schema (Local types)
 // ─────────────────────────────────────────────
 
-type interactionsRequest struct {
-	Model          string          `json:"model"`
-	Input          string          `json:"input"`
-	ResponseFormat *responseFormat `json:"response_format,omitempty"`
+type momInteractionsRequest struct {
+	Model            string               `json:"model"`
+	Input            string               `json:"input"`
+	ResponseFormat   *momResponseFormat   `json:"response_format,omitempty"`
+	GenerationConfig *momGenerationConfig `json:"generation_config,omitempty"`
 }
 
-type responseFormat struct {
+type momGenerationConfig struct {
+	Temperature *float64 `json:"temperature,omitempty"`
+}
+
+type momResponseFormat struct {
 	Type     string `json:"type"`
 	MIMEType string `json:"mime_type"`
 }
 
-type interactionsResponse struct {
-	ID         string            `json:"id"`
-	Status     string            `json:"status"`
-	OutputText string            `json:"output_text,omitempty"`
-	Steps      []interactionStep `json:"steps"`
+type momInteractionsResponse struct {
+	ID         string               `json:"id"`
+	Status     string               `json:"status"`
+	OutputText string               `json:"output_text,omitempty"`
+	Steps      []momInteractionStep `json:"steps"`
 	Error      *struct {
 		Code    any    `json:"code"`
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
 }
 
-type interactionStep struct {
-	Type    string               `json:"type"`
-	Content []interactionContent `json:"content"`
+type momInteractionStep struct {
+	Type    string                  `json:"type"`
+	Content []momInteractionContent `json:"content"`
 }
 
-type interactionContent struct {
+type momInteractionContent struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
 }
@@ -208,120 +211,127 @@ type interactionContent struct {
 // ─────────────────────────────────────────────
 
 // ExtractMeetingMinutes sends the transcript to Gemini, resolves speaker names in both transcript & MoM, and parses the structured result.
-func (s *GeminiService) ExtractMeetingMinutes(ctx context.Context, transcript string) (*MeetingMinutes, string, error) {
+func (s *GeminiMeetingMinutesService) ExtractMeetingMinutes(ctx context.Context, transcript string) (*MeetingMinutes, string, error) {
 	trimmedTranscript := strings.TrimSpace(transcript)
 	if trimmedTranscript == "" {
 		return nil, "", fmt.Errorf("transcript cannot be empty")
 	}
 
-	prompt := fmt.Sprintf(`You are extracting Minutes of Meeting (MoM) from a transcribed conversation. The transcript is the ONLY source of truth. Use no outside knowledge, no assumptions about job roles, and no business logic.
+	prompt := fmt.Sprintf(`You are an expert AI system for extracting accurate, professional, and audit-grade Minutes of Meeting (MoM) from meeting transcripts.
 
-STEP 1 - EVIDENCE FIRST
-For every item you extract (attendee, decision, action, cause, risk, number, next-meeting detail), ensure there is supporting dialogue in the transcript. If the transcript does not support the item, do not include it.
+The transcript provided at the end of this prompt is the ONLY source of truth. Use NO outside knowledge, NO unstated business assumptions, and NO speculation.
 
-STEP 2 - CLASSIFY EACH ITEM
-- EXPLICIT: directly stated. Include.
-- CLEARLY_ESTABLISHED: not word-for-word, but the conversation unambiguously establishes it. Include, using wording close to the transcript.
-- INFERRED: plausible from context/roles/logic. EXCLUDE from the MoM.
-- UNKNOWN: transcript is silent. Use null, [] or empty array.
-Test for CLEARLY_ESTABLISHED: "Would two careful readers of this transcript agree without needing outside assumptions?" If not, it is INFERRED and must be omitted.
+==================================================
+1. SOURCE OF TRUTH & EVIDENCE FIRST
+==================================================
+Every extracted attendee, agenda topic, discussion point, decision, action item, owner, deadline, risk, and next-meeting detail MUST be directly grounded in the dialogue. If the transcript is silent or ambiguous, use null or [].
+Accuracy is more important than completeness. When uncertain, prefer omission or null over guessing.
 
-STEP 3 - FIELD RULES
-1. MEETING METADATA:
-   - "title": Use the exact meeting title from the dialogue (e.g. "Monthly Meeting", not "Monthly Team Meeting" unless explicitly stated).
-   - "meeting_type": "Monthly Meeting" or null.
-   - "date", "time", "location": null unless explicitly stated in dialogue.
+==================================================
+2. ATTENDEES, LATE ARRIVALS & ABSENCES
+==================================================
+* ATTENDEES: Include ONLY individuals who were physically or virtually present and spoke or were actively introduced.
+* LATE ARRIVALS: If someone was initially announced as running late (or had sent apologies) but subsequently arrived during the meeting and spoke, they ARE an attendee and MUST be included in "attendees" (designation may note their role or "Arrived late").
+* ABSENCES & APOLOGIES: Anyone absent, off sick, or who sent apologies MUST be STRICTLY EXCLUDED from "attendees". Document their absences and stated reasons in "discussion_points" under a topic "Apologies for Absence & Introductions".
 
-2. ATTENDEES:
-   - Include ONLY individuals who were present and spoke or were confirmed in attendance.
-   - Anyone who arrived late: Include and note "arrived late" in their designation/notes (e.g. "Frank Lyons").
-   - Unnamed attendees confirmed present (e.g. minute taker): Record their role only ("Minute taker", designation "specialist minute taker").
-   - Anyone absent, off sick, or who sent apologies (e.g. Gary Cope, Carl Madden, Joy Ballenwiese, Janet Bowers, Clive): STRICTLY EXCLUDE from Attendees. Document their apologies/absence in Discussion Points under "Apologies for Absence & Introductions".
-   - Include accurate job titles / designations when introduced or stated in the transcript.
+==================================================
+3. AGENDA TOPICS
+==================================================
+* Extract all formal agenda items, review items, and topics raised for discussion (e.g. Apologies for Absence, Matters Arising, specific agenda topics, Training, and Any Other Business).
+* If "matters arising" was raised and participants confirmed none, include it in agenda and record "None" in discussion points.
 
-3. AGENDA & DISCUSSION POINTS:
-   - Group discussion points by topic using formal titles (e.g. "Apologies for Absence & Introductions", "Matters Arising", "Car Parking Issues", "Staff Morale & Feedback", "IT Issues & Infrastructure", "Financial Report", "Any Other Business").
-   - Matters arising: Explicitly record "None" if participants confirmed there were no matters arising from the previous meeting.
-   - NO UNVERIFIED CAUSAL LINKS: Never link two events causally unless explicitly stated. Report events separately (e.g. "A power cut occurred" and "Accounts agreed to pay electricity bills on time", DO NOT state as fact that the power cut was caused by an unpaid bill).
-   - NO JARGON AS FACT: Drop transcription errors or technical jargon (e.g. logative rebix, sub-feeders); state the plain conclusion reached (power cut).
-   - NO SPECULATION: Do not state that Sue Carpenter needs a car or that staff cycle to shower. Record only what was directly said.
-   - NUMBERS & FINANCE: Copy figures exactly. If units/meaning are unclear, add "(meaning/units not stated)" (e.g. figures 52, 21, and 11). Note that the company is "down on last year" but remains in the black.
+==================================================
+4. DISCUSSION POINTS & DISPUTED NUMBERS
+==================================================
+* Maintain objective, neutral summaries of substantive discussions.
+* NO UNVERIFIED CAUSALITY: Never state that Event A caused Event B unless explicit causal words ("caused by", "because of", "as a result of") are spoken. Report adjacent events as separate factual items (e.g. report a power issue occurred, and report that paying electricity bills was agreed, but do NOT state that unpaid bills caused the power cut).
+* NUMBERS & FINANCIAL DATA: Copy numbers verbatim. If units or labels are not stated, do not guess them (e.g. do not label a figure as "revenue difference" if the transcript only clarifies the number as 11).
 
-4. DECISIONS:
-   - Decisions require explicit consensus or commitment (e.g. "Agreed", "That settles that", chair's call with no objection). Brainstormed ideas are NOT decisions.
-   - Keep decisions distinct:
-     * 5 company parking spaces in total: 3 for visitors/clients, 2 allocated to Sue Carpenter and Jason Somerville (with Jason parking by the garages).
-     * Anyone parking inconsiderately will forfeit their parking privileges.
-     * Accounts to pay electricity bills on time.
-     * Staff to submit 4 team-building activity ideas within two days, from which Rita will pick options for a staff vote.
+==================================================
+5. DECISIONS VS SUGGESTIONS
+==================================================
+* Decisions require explicit consensus, formal approval, or chair ruling (e.g. "Agreed", "That settles that", "agreed by the group").
+* DECISIONS ON PROCEDURE & VOTING: When participants agree on a course of action for collecting feedback or making selections (e.g. agreeing to collect staff morale options and put them to a company-wide vote), this is an agreed Decision on procedure and MUST be recorded in decisions.
+* SUGGESTIONS & REJECTED PROPOSALS: Brainstormed ideas, casual suggestions, or rejected proposals (e.g. darts, go-karting, party Pilates) are NOT decisions.
+* ARITHMETIC CONSTRAINTS: Respect explicitly stated totals. Never record decisions that invent allocations exceeding established limits (e.g. allocating 9 spaces when the transcript establishes only 5 total spaces). Distinguish initial brainstormed numbers (like 4 sales staff) from finalized allocations (3 for visitors, 2 for Sue and Jason).
 
-5. ACTION ITEMS & OWNERS:
-   - Exhaustively scan for every "I'll / can you / we need to / let's" commitment. Do not merge separate action items.
-   - Start each action item with a clear active verb.
-   - OWNERS: Assign ONLY if someone explicitly volunteered ("I'll send it") or was explicitly assigned.
-     * Julian Geddis volunteered to send the priority parking list to all staff ("I'll send it").
-     * Jason Somerville volunteered to get a list, circulate it, and put up signs on company parking spaces.
-     * Julian Geddis to confirm the number of sales staff who use their cars during the day.
-     * Rita to coordinate/allocate priority spaces when an allocated staff member is absent/off sick.
-     * All Attendees: Email 4 team-building/morale activity ideas to Rita within two days.
-     * Rita: Select options from the submitted team-building ideas for a company-wide vote.
-     * Rita: Speak with Clive to set a date for a separate meeting with Clive, Rita, and Frank regarding software training. (Due date: null; Lucy's 2-week suggestion was not confirmed).
-     * Accounts Department: Pay electricity bills on time (per Rita's "Can we minute accounts?").
-     * Schedule general cleanliness issues (kitchen plates and shower room) for the next meeting. (Owner: null, because the addressee was not specified).
-   - DUE DATES: Only explicit deadlines in original phrasing (e.g. "within two days"). Otherwise null. Never convert to calendar date.
+==================================================
+6. ACTION ITEMS, OWNERS & DEADLINES
+==================================================
+* EXHAUSTIVE COMMITMENT SWEEP: Scan the transcript thoroughly for all explicit verbal commitments, directives, or agreed tasks starting with active verbs ("I will", "I'll", "let's", "can you", "we need to", "make sure they're scheduled").
+* INDIVIDUAL SPOKEN COMMITMENTS: Whenever an attendee states a personal commitment to handle an action (e.g. "I'll coordinate letting the next member know...", "I'll speak with Clive and let you know date..."), capture it as an action item with that person as owner.
+* FUTURE SCHEDULING COMMITMENTS: Directives to schedule or carry forward an issue for a subsequent meeting (e.g. "make sure they're scheduled for the next meeting") MUST be recorded as an action item (owner: null if unassigned) AND noted under next_meeting.agenda.
+* ACTION DESCRIPTIONS: Begin each action item with a clear active verb (e.g. "Circulate...", "Submit...", "Speak with...", "Schedule...", "Coordinate...").
+* OWNERS: Assign an owner ONLY if someone explicitly volunteered (e.g. "I'll send it", "I'll speak with...") or was directly assigned by the chair without objection.
+  - If a task is assigned to everyone present or company staff (e.g. coming up with 4 ideas), record owner as "All Attendees" or "All Staff".
+  - If no specific person volunteered or was assigned, record owner: null.
+  - NEVER infer an owner based on who complained or brought up the problem.
+* DEADLINES: Extract explicit deadlines only (e.g. "within two days", "next meeting").
+  - TENTATIVE SUGGESTION RULE: If a timeframe or deadline was merely suggested by another person (e.g. "maybe in the next two weeks?") but was NOT confirmed or accepted by the task owner or chair, record due_date: null. Do NOT turn tentative suggestions into confirmed deadlines.
+* STATUS: Set status to "Pending" for all newly agreed action items.
 
-6. RISKS & DEPENDENCIES:
-   - Only include risks, issues, or dependencies that participants actually raised.
-   - CRITICAL: "owner" and "required_action" MUST be null unless explicitly stated or assigned in the transcript! DO NOT invent risk owners (e.g. no "Management / Department Heads") or invented mitigations (e.g. no "establish vendor protocols").
+==================================================
+7. RISKS, ISSUES & DEPENDENCIES
+==================================================
+* Record explicit operational risks, blockers, or problems raised by participants (e.g. parking shortages/disputes, low morale, software training gaps, job security/restructuring concerns).
+* Do NOT invent causal links between separate issues.
+* owner and required_action MUST be null unless explicitly assigned in the transcript.
 
-7. NEXT MEETING:
-   - AGENDA: ONLY include items explicitly scheduled for the next general meeting (e.g. cleanliness of kitchen plates and shower room). Separate meetings mentioned in discussion (e.g. follow-up training with Clive) are follow-up meetings, NOT the next general meeting.
-   - "date", "time": null unless confirmed.
+==================================================
+8. NEXT MEETING
+==================================================
+* If topics are explicitly requested to be scheduled for the next meeting (e.g. cleanliness issues), record them under agenda as scheduled topics.
+* Do not present a single carried-forward item as the entire exclusive agenda.
+* date and time must be null unless explicitly confirmed.
 
-Return JSON ONLY using this exact structure:
+==================================================
+9. OUTPUT FORMAT
+==================================================
+Return ONLY valid JSON matching this exact structure:
+
 {
   "named_transcript": "...",
   "meeting_minutes": {
     "meeting": {
-      "title": "Monthly Meeting",
+      "title": null,
       "date": null,
       "time": null,
       "location": null,
-      "meeting_type": "Monthly Meeting"
+      "meeting_type": null
     },
     "attendees": [
       {
         "name": "Full Name",
-        "designation": "Job Title or null"
+        "designation": null
       }
     ],
-    "chairperson": "Name or null",
+    "chairperson": null,
     "minutes_prepared_by": null,
-    "agenda": ["Topic 1", "Topic 2"],
+    "agenda": [],
     "discussion_points": [
       {
         "topic": "Topic Name",
-        "discussion": "Factual, neutral, evidence-grounded summary..."
+        "discussion": "Factual summary..."
       }
     ],
     "decisions": [
       {
-        "decision": "Decision Title",
-        "remarks": "Detailed remarks on what was agreed..."
+        "decision": "Agreed outcome...",
+        "remarks": "Context or details..."
       }
     ],
     "action_items": [
       {
-        "action_item": "Action description starting with an active verb...",
-        "owner": "Person / All Attendees / Accounts Department or null",
-        "priority": "High / Medium / Low or null",
-        "due_date": "Original timeframe or null",
+        "action_item": "Active verb description...",
+        "owner": null,
+        "priority": null,
+        "due_date": null,
         "status": "Pending"
       }
     ],
     "risks_issues_dependencies": [
       {
-        "issue": "Risk description as raised in transcript...",
+        "issue": "Explicit risk or issue...",
         "owner": null,
         "required_action": null
       }
@@ -329,20 +339,27 @@ Return JSON ONLY using this exact structure:
     "next_meeting": {
       "date": null,
       "time": null,
-      "agenda": "General cleanliness problems (unwashed plates in the kitchen and state of the shower room)"
+      "agenda": null
     }
   }
 }
 
-Transcript:
+==================================================
+TRANSCRIPT
+==========
+
 %s`, trimmedTranscript)
 
-	reqBody := interactionsRequest{
+	zeroTemp := 0.0
+	reqBody := momInteractionsRequest{
 		Model: s.model,
 		Input: prompt,
-		ResponseFormat: &responseFormat{
+		ResponseFormat: &momResponseFormat{
 			Type:     "text",
 			MIMEType: "application/json",
+		},
+		GenerationConfig: &momGenerationConfig{
+			Temperature: &zeroTemp,
 		},
 	}
 
@@ -413,7 +430,7 @@ Transcript:
 		break
 	}
 
-	var intResp interactionsResponse
+	var intResp momInteractionsResponse
 	if err = json.Unmarshal(respBody, &intResp); err != nil {
 		return nil, "", fmt.Errorf("failed to parse Gemini interactions response: %w", err)
 	}
@@ -515,7 +532,7 @@ Transcript:
 
 // SaveMeetingMinutes persists extracted Minutes of Meeting into the meeting_minutes table with the given conversation_id.
 // If a record already exists for the conversation, it replaces it (upsert).
-func (s *GeminiService) SaveMeetingMinutes(ctx context.Context, conversationID uuid.UUID, mom *MeetingMinutes) (*MeetingMinutesRecord, error) {
+func (s *GeminiMeetingMinutesService) SaveMeetingMinutes(ctx context.Context, conversationID uuid.UUID, mom *MeetingMinutes) (*MeetingMinutesRecord, error) {
 	if mom == nil {
 		return nil, fmt.Errorf("meeting minutes cannot be nil")
 	}
@@ -548,7 +565,7 @@ func (s *GeminiService) SaveMeetingMinutes(ctx context.Context, conversationID u
 }
 
 // ExtractAndSaveMeetingMinutes coordinates MoM extraction, transcript name resolution, and database insertion.
-func (s *GeminiService) ExtractAndSaveMeetingMinutes(ctx context.Context, conversationID uuid.UUID, transcript string) (*MeetingMinutes, string, error) {
+func (s *GeminiMeetingMinutesService) ExtractAndSaveMeetingMinutes(ctx context.Context, conversationID uuid.UUID, transcript string) (*MeetingMinutes, string, error) {
 	mom, namedTranscript, err := s.ExtractMeetingMinutes(ctx, transcript)
 	if err != nil {
 		return nil, "", fmt.Errorf("extract meeting minutes: %w", err)

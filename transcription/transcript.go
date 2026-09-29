@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -28,15 +29,17 @@ type TranscriptionService interface {
 // GeminiService transcribes audio using the Google Gemini Interactions API.
 // It uploads audio via the File API, then calls the /v1beta/interactions endpoint
 // with speaker diarization configured via transcription_config.
-type GeminiService struct {
+type GeminiTranscriptionService struct {
 	apiKey     string
 	model      string
+	nameModel  string
 	httpClient *http.Client
 }
 
 // NewGeminiService reads GEMINI_API_KEY from the environment and constructs
-// a GeminiService. GEMINI_TRANSCRIPTION_MODEL overrides the default model.
-func NewGeminiService() (*GeminiService, error) {
+// a GeminiService. GEMINI_TRANSCRIPTION_MODEL overrides the default transcription model,
+// and GEMINI_TOPIC_MODEL overrides the default name resolution model.
+func NewGeminiTranscriptionService() (*GeminiTranscriptionService, error) {
 	key := os.Getenv("GEMINI_API_KEY")
 	if key == "" {
 		return nil, fmt.Errorf("GEMINI_API_KEY is not set")
@@ -47,17 +50,23 @@ func NewGeminiService() (*GeminiService, error) {
 		model = "gemini-3.5-transcribe"
 	}
 
-	return &GeminiService{
-		apiKey: key,
-		model:  model,
+	nameModel := os.Getenv("GEMINI_TOPIC_MODEL")
+	if nameModel == "" {
+		nameModel = "gemini-3.5-flash-lite"
+	}
+
+	return &GeminiTranscriptionService{
+		apiKey:    key,
+		model:     model,
+		nameModel: nameModel,
 		httpClient: &http.Client{
 			Timeout: 5 * time.Minute, // audio upload + transcription can take time
 		},
 	}, nil
 }
 
-// Model returns the Gemini model name in use.
-func (s *GeminiService) Model() string {
+// Model returns the Gemini transcription model name in use.
+func (s *GeminiTranscriptionService) Model() string {
 	return s.model
 }
 
@@ -76,9 +85,9 @@ type uploadFileResponse struct {
 // Interactions API request types
 // ─────────────────────────────────────────────
 
-// interactionsRequest is the body sent to POST /v1beta/interactions.
+// audioInteractionsRequest is the body sent to POST /v1beta/interactions.
 // This is the correct endpoint for gemini-3.5-transcribe (not generateContent).
-type interactionsRequest struct {
+type audioInteractionsRequest struct {
 	Model            string           `json:"model"`
 	Input            []inputItem      `json:"input"`
 	GenerationConfig generationConfig `json:"generation_config"`
@@ -108,7 +117,7 @@ type transcriptionMode struct {
 	TimestampGranularities []string `json:"timestamp_granularities,omitempty"`
 }
 
-// interactionsResponse is the raw REST JSON returned by POST /v1beta/interactions.
+// audioInteractionsResponse is the raw REST JSON returned by POST /v1beta/interactions.
 //
 // Unlike generateContent, the Interactions API wraps everything inside an
 // "interaction" object. The transcript text lives at:
@@ -117,29 +126,29 @@ type transcriptionMode struct {
 //
 // where role == "model". The SDK convenience property output_text walks
 // this path automatically; here we do it manually.
-type interactionsResponse struct {
-	Steps []interactionStep `json:"steps"`
+type audioInteractionsResponse struct {
+	Steps []audioInteractionStep `json:"steps"`
 	Error *struct {
 		Code    int    `json:"code"`
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
 }
 
-type interactionStep struct {
-	Content []interactionContent `json:"content"`
-	Type    string               `json:"type"`
-	Speaker string               `json:"speaker,omitempty"`
+type audioInteractionStep struct {
+	Content []audioInteractionContent `json:"content"`
+	Type    string                    `json:"type"`
+	Speaker string                    `json:"speaker,omitempty"`
 }
 
-type interactionContent struct {
-	Text         string                  `json:"text"`
-	Type         string                  `json:"type"`
-	Speaker      string                  `json:"speaker,omitempty"`
-	SpeakerLabel string                  `json:"speaker_label,omitempty"`
-	Annotations  []interactionAnnotation `json:"annotations,omitempty"`
+type audioInteractionContent struct {
+	Text         string                       `json:"text"`
+	Type         string                       `json:"type"`
+	Speaker      string                       `json:"speaker,omitempty"`
+	SpeakerLabel string                       `json:"speaker_label,omitempty"`
+	Annotations  []audioInteractionAnnotation `json:"annotations,omitempty"`
 }
 
-type interactionAnnotation struct {
+type audioInteractionAnnotation struct {
 	Type         string `json:"type"`
 	Text         string `json:"text"`
 	Speaker      string `json:"speaker,omitempty"`
@@ -152,9 +161,10 @@ type interactionAnnotation struct {
 // Transcribe (public interface implementation)
 // ─────────────────────────────────────────────
 
-// Transcribe uploads the audio to the Gemini File API, then calls the
-// Interactions API with speaker diarization enabled via transcription_config.
-func (s *GeminiService) Transcribe(ctx context.Context, audio io.Reader, filename string) (string, error) {
+// Transcribe uploads the audio to the Gemini File API, transcribes with
+// speaker diarization enabled, and resolves speaker labels to real names
+// whenever names are mentioned or introduced in the conversation.
+func (s *GeminiTranscriptionService) Transcribe(ctx context.Context, audio io.Reader, filename string) (string, error) {
 	mimeType := mimeTypeForFilename(filename)
 
 	// Step 1: upload the audio file to get a persistent URI.
@@ -169,7 +179,134 @@ func (s *GeminiService) Transcribe(ctx context.Context, audio io.Reader, filenam
 		return "", fmt.Errorf("transcription failed: %w", err)
 	}
 
+	// Step 3: resolve speaker names from introductions and dialogue.
+	// If names are mentioned or speakers are introduced, replace generic "Speaker X:" labels with their actual names.
+	// If names are not mentioned or remain unknown, keep "Speaker X:".
+	namedTranscript := s.resolveSpeakerNames(ctx, transcript)
+	if strings.TrimSpace(namedTranscript) != "" {
+		return strings.TrimSpace(namedTranscript), nil
+	}
+
 	return transcript, nil
+}
+
+// resolveSpeakerNames uses Gemini to identify real names from intros/dialogue
+// and replaces generic "Speaker X:" labels with actual names. If a speaker's
+// name is not mentioned, it retains "Speaker X:".
+func (s *GeminiTranscriptionService) resolveSpeakerNames(ctx context.Context, rawTranscript string) string {
+	trimmed := strings.TrimSpace(rawTranscript)
+	if trimmed == "" {
+		return rawTranscript
+	}
+
+	prompt := fmt.Sprintf(`You are an expert dialogue editor. You are given a meeting transcript where speakers are currently labeled with generic tags like "Speaker 1:", "Speaker 2:", etc.
+
+TASK:
+Identify and replace each generic speaker label with the actual name of the speaker IF their name was mentioned, introduced, self-introduced, or clearly established in the conversation.
+
+RULES:
+1. When a speaker's identity or name is known from introductions or dialogue (e.g. self-introduction, direct address, roll call, or context), use their actual name as the speaker label (e.g. "Rita:", "Lucy Strokes:", "Jason Somerville:", "Julian Geddis:", "Sue Carpenter:", "Frank Lyons:").
+2. CRITICAL FOR SPEAKER ATTRIBUTION: The speech diarizer often assigns different people to the same generic speaker tag. Whenever someone introduces themselves (e.g. "I'm Sue Carpenter with a D, and I'm the sales director", "I'm Julian Geddis", "I'm Jason Somerville"), that specific line MUST be labeled with THAT person's name. Never attribute "I'm Sue Carpenter..." to Rita or anyone else.
+3. LATE ARRIVALS: When someone arrives late and speaks (e.g. "Sorry, I got held up..."), label them with their name (e.g. "Frank Lyons:").
+4. If a speaker's name was NEVER mentioned or remains unknown/uncertain, KEEP their generic label unchanged (e.g. "Speaker 3:").
+5. CRITICAL: Preserve every single spoken word, sentence, interruption, and punctuation verbatim. DO NOT summarize, omit, rephrase, or edit any of the spoken dialogue.
+6. Output ONLY the updated transcript. No markdown fences, no preamble, no commentary.
+
+TRANSCRIPT:
+%s`, trimmed)
+
+	type textGenConfig struct {
+		Temperature float64 `json:"temperature"`
+	}
+
+	type textReq struct {
+		Model            string         `json:"model"`
+		Input            string         `json:"input"`
+		GenerationConfig *textGenConfig `json:"generation_config,omitempty"`
+	}
+
+	reqBody := textReq{
+		Model: s.nameModel,
+		Input: prompt,
+		GenerationConfig: &textGenConfig{
+			Temperature: 0.0,
+		},
+	}
+
+	reqBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		log.Printf("resolveSpeakerNames: failed to marshal request: %v", err)
+		return rawTranscript
+	}
+
+	const apiURL = "https://generativelanguage.googleapis.com/v1beta/interactions"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(reqBytes))
+	if err != nil {
+		log.Printf("resolveSpeakerNames: failed to create request: %v", err)
+		return rawTranscript
+	}
+
+	req.Header.Set("x-goog-api-key", s.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		log.Printf("resolveSpeakerNames: request error: %v", err)
+		return rawTranscript
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("resolveSpeakerNames: read body error: %v", err)
+		return rawTranscript
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("resolveSpeakerNames: API returned status %d: %s", resp.StatusCode, string(body))
+		return rawTranscript
+	}
+
+	var intResp struct {
+		OutputText string `json:"output_text,omitempty"`
+		Steps      []struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"steps"`
+	}
+
+	if err := json.Unmarshal(body, &intResp); err != nil {
+		log.Printf("resolveSpeakerNames: parse response error: %v", err)
+		return rawTranscript
+	}
+
+	var output string
+	if strings.TrimSpace(intResp.OutputText) != "" {
+		output = strings.TrimSpace(intResp.OutputText)
+	} else {
+		var sb strings.Builder
+		for _, step := range intResp.Steps {
+			for _, c := range step.Content {
+				sb.WriteString(c.Text)
+			}
+		}
+		output = strings.TrimSpace(sb.String())
+	}
+
+	// Clean any markdown code fences if Gemini wrapped it in ```
+	output = strings.TrimPrefix(output, "```transcript")
+	output = strings.TrimPrefix(output, "```text")
+	output = strings.TrimPrefix(output, "```")
+	output = strings.TrimSuffix(output, "```")
+	output = strings.TrimSpace(output)
+
+	if output != "" {
+		log.Printf("resolveSpeakerNames: successfully resolved speaker names (%d chars)", len(output))
+		return output
+	}
+
+	return rawTranscript
 }
 
 // ─────────────────────────────────────────────
@@ -177,7 +314,7 @@ func (s *GeminiService) Transcribe(ctx context.Context, audio io.Reader, filenam
 // ─────────────────────────────────────────────
 
 // uploadFile sends the audio bytes to the Gemini File API and returns the file URI.
-func (s *GeminiService) uploadFile(ctx context.Context, audio io.Reader, filename, mimeType string) (string, error) {
+func (s *GeminiTranscriptionService) uploadFile(ctx context.Context, audio io.Reader, filename, mimeType string) (string, error) {
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
 
@@ -251,8 +388,8 @@ func (s *GeminiService) uploadFile(ctx context.Context, audio io.Reader, filenam
 // transcribeWithDiarization calls the /v1beta/interactions endpoint with
 // the official transcription_config.mode including speaker diarization.
 // This is the correct endpoint for gemini-3.5-transcribe (NOT generateContent).
-func (s *GeminiService) transcribeWithDiarization(ctx context.Context, fileURI, mimeType string) (string, error) {
-	reqBody := interactionsRequest{
+func (s *GeminiTranscriptionService) transcribeWithDiarization(ctx context.Context, fileURI, mimeType string) (string, error) {
+	reqBody := audioInteractionsRequest{
 		Model: s.model,
 		Input: []inputItem{
 			{
@@ -300,7 +437,7 @@ func (s *GeminiService) transcribeWithDiarization(ctx context.Context, fileURI, 
 		return "", fmt.Errorf("failed to read interactions response: %w", err)
 	}
 
-	var iResp interactionsResponse
+	var iResp audioInteractionsResponse
 	if err = json.Unmarshal(respBody, &iResp); err != nil {
 		return "", fmt.Errorf("failed to parse interactions response: %w", err)
 	}
@@ -325,7 +462,7 @@ func (s *GeminiService) transcribeWithDiarization(ctx context.Context, fileURI, 
 // formatDiarizedTranscript formats the transcript with speaker labels (e.g., "Speaker 1: ...")
 // using word-level annotations or content speaker metadata if available, falling back
 // to plain text if no speaker attribution is present.
-func formatDiarizedTranscript(steps []interactionStep) string {
+func formatDiarizedTranscript(steps []audioInteractionStep) string {
 	speakerMap := make(map[string]string)
 	nextSpeakerNum := 1
 

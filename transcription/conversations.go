@@ -1,4 +1,4 @@
-package handlers
+package transcription
 
 import (
 	"context"
@@ -15,16 +15,13 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"transcript/internal/minutes"
-	"transcript/internal/transcription"
 )
 
 // ConversationHandler handles all conversation-related HTTP routes.
 type ConversationHandler struct {
 	DB                   *pgxpool.Pool
-	TranscriptionService transcription.TranscriptionService
-	MinutesService       minutes.MeetingMinutesService
+	TranscriptionService TranscriptionService
+	MinutesService       MeetingMinutesService
 }
 
 // ─────────────────────────────────────────────
@@ -36,11 +33,11 @@ type createConversationRequest struct {
 }
 
 type conversationResponse struct {
-	ID             string                  `json:"id"`
-	Status         string                  `json:"status"`
-	Transcript     string                  `json:"transcript,omitempty"`
-	AudioFilename  *string                 `json:"audio_filename,omitempty"`
-	MeetingMinutes *minutes.MeetingMinutes `json:"meeting_minutes"`
+	ID             string          `json:"id"`
+	Status         string          `json:"status"`
+	Transcript     string          `json:"transcript,omitempty"`
+	AudioFilename  *string         `json:"audio_filename,omitempty"`
+	MeetingMinutes *MeetingMinutes `json:"meeting_minutes"`
 }
 
 // HandleConversations routes GET to GetConversations and POST to CreateConversation.
@@ -81,7 +78,7 @@ func (h *ConversationHandler) CreateConversation(w http.ResponseWriter, r *http.
 
 	log.Printf("CreateConversation: saved conversation %s", id)
 
-	var extractedMinutes *minutes.MeetingMinutes
+	var extractedMinutes *MeetingMinutes
 	if h.MinutesService != nil {
 		log.Printf("CreateConversation: extracting meeting minutes for conversation %s", id)
 		var mErr error
@@ -291,12 +288,12 @@ func (h *ConversationHandler) processAudioBackground(id uuid.UUID, localFilePath
 
 // ConversationDetail represents a complete conversation with its associated meeting minutes.
 type ConversationDetail struct {
-	ID             uuid.UUID               `json:"id"`
-	Status         string                  `json:"status"`
-	Transcript     string                  `json:"transcript"`
-	AudioFilename  *string                 `json:"audio_filename"`
-	CreatedAt      time.Time               `json:"created_at"`
-	MeetingMinutes *minutes.MeetingMinutes `json:"meeting_minutes"`
+	ID             uuid.UUID       `json:"id"`
+	Status         string          `json:"status"`
+	Transcript     string          `json:"transcript"`
+	AudioFilename  *string         `json:"audio_filename"`
+	CreatedAt      time.Time       `json:"created_at"`
+	MeetingMinutes *MeetingMinutes `json:"meeting_minutes"`
 }
 
 type errorResponse struct {
@@ -362,7 +359,7 @@ func (h *ConversationHandler) GetConversations(w http.ResponseWriter, r *http.Re
 	}
 	defer minutesRows.Close()
 
-	minutesByConvID := make(map[uuid.UUID]*minutes.MeetingMinutes)
+	minutesByConvID := make(map[uuid.UUID]*MeetingMinutes)
 	for minutesRows.Next() {
 		var convID uuid.UUID
 		var rawData []byte
@@ -370,7 +367,7 @@ func (h *ConversationHandler) GetConversations(w http.ResponseWriter, r *http.Re
 			log.Printf("GetConversations: minutes scan error: %v", err)
 			continue
 		}
-		var mom minutes.MeetingMinutes
+		var mom MeetingMinutes
 		if err := json.Unmarshal(rawData, &mom); err == nil {
 			minutesByConvID[convID] = &mom
 		}
@@ -435,7 +432,7 @@ func (h *ConversationHandler) GetConversationByID(w http.ResponseWriter, r *http
 		`SELECT data FROM meeting_minutes WHERE conversation_id = $1`,
 		convID).Scan(&rawMinutes)
 	if err == nil {
-		var mom minutes.MeetingMinutes
+		var mom MeetingMinutes
 		if err := json.Unmarshal(rawMinutes, &mom); err == nil {
 			c.MeetingMinutes = &mom
 		}

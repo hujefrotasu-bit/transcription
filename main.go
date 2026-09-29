@@ -8,7 +8,7 @@ import (
 
 	"transcript/internal/database"
 	"transcript/internal/handlers"
-	"transcript/internal/topics"
+	"transcript/internal/minutes"
 	"transcript/internal/transcription"
 )
 
@@ -33,18 +33,18 @@ func main() {
 	}
 	log.Println("Transcription service ready (model:", svc.Model(), ")")
 
-	// Initialise the Gemini topic extraction service.
-	topicSvc, err := topics.NewGeminiService(db)
+	// Initialise the Gemini Minutes of Meeting service.
+	minutesSvc, err := minutes.NewGeminiService(db)
 	if err != nil {
-		log.Fatal("Failed to initialise topic service:", err)
+		log.Fatal("Failed to initialise meeting minutes service:", err)
 	}
-	log.Println("Topic extraction service ready (model:", topicSvc.Model(), ")")
+	log.Println("Meeting minutes service ready (model:", minutesSvc.Model(), ")")
 
-	// Wire up handler with DB + transcription + topic services.
+	// Wire up handler with DB + transcription + meeting minutes services.
 	conversationHandler := &handlers.ConversationHandler{
 		DB:                   db,
 		TranscriptionService: svc,
-		TopicService:         topicSvc,
+		MinutesService:       minutesSvc,
 	}
 
 	// Routes.

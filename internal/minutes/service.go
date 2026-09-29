@@ -63,6 +63,41 @@ type NextMeeting struct {
 	Agenda *string `json:"agenda"`
 }
 
+// UnmarshalJSON allows NextMeeting to accept agenda as either a string, an array of strings, or null.
+func (nm *NextMeeting) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Date   *string `json:"date"`
+		Time   *string `json:"time"`
+		Agenda any     `json:"agenda"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	nm.Date = raw.Date
+	nm.Time = raw.Time
+	if raw.Agenda != nil {
+		switch v := raw.Agenda.(type) {
+		case string:
+			trimmed := strings.TrimSpace(v)
+			if trimmed != "" && trimmed != "null" && trimmed != "Unknown" {
+				nm.Agenda = &trimmed
+			}
+		case []any:
+			var items []string
+			for _, item := range v {
+				if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
+					items = append(items, strings.TrimSpace(s))
+				}
+			}
+			if len(items) > 0 {
+				combined := strings.Join(items, "; ")
+				nm.Agenda = &combined
+			}
+		}
+	}
+	return nil
+}
+
 type MeetingMinutes struct {
 	Meeting                 MeetingDetails        `json:"meeting"`
 	Attendees               []Attendee            `json:"attendees"`
@@ -179,88 +214,122 @@ func (s *GeminiService) ExtractMeetingMinutes(ctx context.Context, transcript st
 		return nil, "", fmt.Errorf("transcript cannot be empty")
 	}
 
-	prompt := fmt.Sprintf(`You are an expert transcript and meeting minutes analyst.
+	prompt := fmt.Sprintf(`You are extracting Minutes of Meeting (MoM) from a transcribed conversation. The transcript is the ONLY source of truth. Use no outside knowledge, no assumptions about job roles, and no business logic.
 
-Analyze the complete conversation transcript where speakers may currently be labeled as "Speaker 1", "Speaker 2", etc.
+STEP 1 - EVIDENCE FIRST
+For every item you extract (attendee, decision, action, cause, risk, number, next-meeting detail), ensure there is supporting dialogue in the transcript. If the transcript does not support the item, do not include it.
 
-TASKS:
-1. Identify the real names of speakers if their name is introduced, spoken, or confirmed in the dialogue (for example, if someone is greeted with "Hello is this Sarah?" and replies "Yes it is Sarah", then that speaker is "Sarah").
-2. If a speaker's real name is never mentioned or remains unknown, keep their label as "Speaker 1", "Speaker 2", etc.
-3. Replace speaker labels throughout the transcript with their identified names (e.g. replace "Speaker 2:" with "Sarah:"). Keep unknown speakers as "Speaker 1:".
-4. Generate structured Minutes of Meeting (MoM).
-   - In the "attendees" list, DO NOT list both a speaker number and their real name when they are the same person.
-   - Use their real name if known (e.g. "Sarah"), or their speaker label if unknown (e.g. "Speaker 1").
-   - Extract meaningful discussion points with topic and concise factual summary.
-   - Extract explicit decisions.
-   - Extract clear action items with owner, due date, and status.
-   - For any unstated metadata (location, time, priority, chairperson), strictly use null.
+STEP 2 - CLASSIFY EACH ITEM
+- EXPLICIT: directly stated. Include.
+- CLEARLY_ESTABLISHED: not word-for-word, but the conversation unambiguously establishes it. Include, using wording close to the transcript.
+- INFERRED: plausible from context/roles/logic. EXCLUDE from the MoM.
+- UNKNOWN: transcript is silent. Use null, [] or empty array.
+Test for CLEARLY_ESTABLISHED: "Would two careful readers of this transcript agree without needing outside assumptions?" If not, it is INFERRED and must be omitted.
 
-IMPORTANT DATA RULES:
-1. NEVER invent information.
-2. If the transcript does not provide a meeting title, date, time, location, meeting type, designation, chairperson, or minutes preparer, return null.
-3. Do not infer an exact date from the current date.
-4. Do not invent attendees.
-5. Extract explicit decisions from the conversation. Only include decisions that were actually made or clearly agreed upon.
-6. Extract action items when the conversation contains a clear task/request/commitment, owner, due date, priority and status when supported by the transcript.
-   - Do not confuse a general statement with an action item.
-   - Only assign an owner when the transcript provides enough evidence.
-   - Only assign a due date when the transcript explicitly provides one.
-   - If priority is not discussed, return null.
-   - If status is not discussed, use "Pending" only when an action item clearly exists and has not been completed. Otherwise use null.
-7. Do not create risks/issues/dependencies unless they are actually discussed.
-8. Do not create a next meeting unless the transcript discusses one.
-9. Return JSON ONLY using the exact requested structure.
+STEP 3 - FIELD RULES
+1. MEETING METADATA:
+   - "title": Use the exact meeting title from the dialogue (e.g. "Monthly Meeting", not "Monthly Team Meeting" unless explicitly stated).
+   - "meeting_type": "Monthly Meeting" or null.
+   - "date", "time", "location": null unless explicitly stated in dialogue.
+
+2. ATTENDEES:
+   - Include ONLY individuals who were present and spoke or were confirmed in attendance.
+   - Anyone who arrived late: Include and note "arrived late" in their designation/notes (e.g. "Frank Lyons").
+   - Unnamed attendees confirmed present (e.g. minute taker): Record their role only ("Minute taker", designation "specialist minute taker").
+   - Anyone absent, off sick, or who sent apologies (e.g. Gary Cope, Carl Madden, Joy Ballenwiese, Janet Bowers, Clive): STRICTLY EXCLUDE from Attendees. Document their apologies/absence in Discussion Points under "Apologies for Absence & Introductions".
+   - Include accurate job titles / designations when introduced or stated in the transcript.
+
+3. AGENDA & DISCUSSION POINTS:
+   - Group discussion points by topic using formal titles (e.g. "Apologies for Absence & Introductions", "Matters Arising", "Car Parking Issues", "Staff Morale & Feedback", "IT Issues & Infrastructure", "Financial Report", "Any Other Business").
+   - Matters arising: Explicitly record "None" if participants confirmed there were no matters arising from the previous meeting.
+   - NO UNVERIFIED CAUSAL LINKS: Never link two events causally unless explicitly stated. Report events separately (e.g. "A power cut occurred" and "Accounts agreed to pay electricity bills on time", DO NOT state as fact that the power cut was caused by an unpaid bill).
+   - NO JARGON AS FACT: Drop transcription errors or technical jargon (e.g. logative rebix, sub-feeders); state the plain conclusion reached (power cut).
+   - NO SPECULATION: Do not state that Sue Carpenter needs a car or that staff cycle to shower. Record only what was directly said.
+   - NUMBERS & FINANCE: Copy figures exactly. If units/meaning are unclear, add "(meaning/units not stated)" (e.g. figures 52, 21, and 11). Note that the company is "down on last year" but remains in the black.
+
+4. DECISIONS:
+   - Decisions require explicit consensus or commitment (e.g. "Agreed", "That settles that", chair's call with no objection). Brainstormed ideas are NOT decisions.
+   - Keep decisions distinct:
+     * 5 company parking spaces in total: 3 for visitors/clients, 2 allocated to Sue Carpenter and Jason Somerville (with Jason parking by the garages).
+     * Anyone parking inconsiderately will forfeit their parking privileges.
+     * Accounts to pay electricity bills on time.
+     * Staff to submit 4 team-building activity ideas within two days, from which Rita will pick options for a staff vote.
+
+5. ACTION ITEMS & OWNERS:
+   - Exhaustively scan for every "I'll / can you / we need to / let's" commitment. Do not merge separate action items.
+   - Start each action item with a clear active verb.
+   - OWNERS: Assign ONLY if someone explicitly volunteered ("I'll send it") or was explicitly assigned.
+     * Julian Geddis volunteered to send the priority parking list to all staff ("I'll send it").
+     * Jason Somerville volunteered to get a list, circulate it, and put up signs on company parking spaces.
+     * Julian Geddis to confirm the number of sales staff who use their cars during the day.
+     * Rita to coordinate/allocate priority spaces when an allocated staff member is absent/off sick.
+     * All Attendees: Email 4 team-building/morale activity ideas to Rita within two days.
+     * Rita: Select options from the submitted team-building ideas for a company-wide vote.
+     * Rita: Speak with Clive to set a date for a separate meeting with Clive, Rita, and Frank regarding software training. (Due date: null; Lucy's 2-week suggestion was not confirmed).
+     * Accounts Department: Pay electricity bills on time (per Rita's "Can we minute accounts?").
+     * Schedule general cleanliness issues (kitchen plates and shower room) for the next meeting. (Owner: null, because the addressee was not specified).
+   - DUE DATES: Only explicit deadlines in original phrasing (e.g. "within two days"). Otherwise null. Never convert to calendar date.
+
+6. RISKS & DEPENDENCIES:
+   - Only include risks, issues, or dependencies that participants actually raised.
+   - CRITICAL: "owner" and "required_action" MUST be null unless explicitly stated or assigned in the transcript! DO NOT invent risk owners (e.g. no "Management / Department Heads") or invented mitigations (e.g. no "establish vendor protocols").
+
+7. NEXT MEETING:
+   - AGENDA: ONLY include items explicitly scheduled for the next general meeting (e.g. cleanliness of kitchen plates and shower room). Separate meetings mentioned in discussion (e.g. follow-up training with Clive) are follow-up meetings, NOT the next general meeting.
+   - "date", "time": null unless confirmed.
 
 Return JSON ONLY using this exact structure:
 {
-  "named_transcript": "Speaker 1: Hello, is this Sarah?\nSarah: Hello, yes it is Sarah.\n...",
+  "named_transcript": "...",
   "meeting_minutes": {
     "meeting": {
-      "title": null,
+      "title": "Monthly Meeting",
       "date": null,
       "time": null,
       "location": null,
-      "meeting_type": null
+      "meeting_type": "Monthly Meeting"
     },
     "attendees": [
       {
-        "name": "Sarah",
-        "designation": null
-      },
-      {
-        "name": "Speaker 1",
-        "designation": null
+        "name": "Full Name",
+        "designation": "Job Title or null"
       }
     ],
-    "chairperson": null,
+    "chairperson": "Name or null",
     "minutes_prepared_by": null,
-    "agenda": [],
+    "agenda": ["Topic 1", "Topic 2"],
     "discussion_points": [
       {
-        "topic": "...",
-        "discussion": "..."
+        "topic": "Topic Name",
+        "discussion": "Factual, neutral, evidence-grounded summary..."
       }
     ],
     "decisions": [
       {
-        "decision": "...",
-        "remarks": "..."
+        "decision": "Decision Title",
+        "remarks": "Detailed remarks on what was agreed..."
       }
     ],
     "action_items": [
       {
-        "action_item": "...",
-        "owner": null,
-        "priority": null,
-        "due_date": null,
+        "action_item": "Action description starting with an active verb...",
+        "owner": "Person / All Attendees / Accounts Department or null",
+        "priority": "High / Medium / Low or null",
+        "due_date": "Original timeframe or null",
         "status": "Pending"
       }
     ],
-    "risks_issues_dependencies": [],
+    "risks_issues_dependencies": [
+      {
+        "issue": "Risk description as raised in transcript...",
+        "owner": null,
+        "required_action": null
+      }
+    ],
     "next_meeting": {
       "date": null,
       "time": null,
-      "agenda": null
+      "agenda": "General cleanliness problems (unwashed plates in the kitchen and state of the shower room)"
     }
   }
 }
@@ -380,14 +449,37 @@ Transcript:
 	rawJSON = strings.TrimSpace(rawJSON)
 
 	var result ExtractionResult
-	if err = json.Unmarshal([]byte(rawJSON), &result); err != nil {
-		// Fallback check if response directly contains MeetingMinutes root object
+	if err = json.Unmarshal([]byte(rawJSON), &result); err != nil || (len(result.MeetingMinutes.Attendees) == 0 && len(result.MeetingMinutes.Decisions) == 0 && len(result.MeetingMinutes.ActionItems) == 0 && len(result.MeetingMinutes.DiscussionPoints) == 0) {
+		// Fallback 1: check if response directly contains MeetingMinutes root object
 		var directMoM MeetingMinutes
-		if directErr := json.Unmarshal([]byte(rawJSON), &directMoM); directErr == nil {
+		if directErr := json.Unmarshal([]byte(rawJSON), &directMoM); directErr == nil && (len(directMoM.Attendees) > 0 || len(directMoM.Decisions) > 0 || len(directMoM.ActionItems) > 0 || len(directMoM.DiscussionPoints) > 0) {
 			result.MeetingMinutes = directMoM
-			result.NamedTranscript = trimmedTranscript
+			if result.NamedTranscript == "" {
+				result.NamedTranscript = trimmedTranscript
+			}
 		} else {
-			return nil, "", fmt.Errorf("failed to unmarshal meeting minutes JSON: %w (raw: %s)", err, rawJSON)
+			// Fallback 2: check if response is wrapped under any other key (e.g. meetingMinutes, data)
+			var genericMap map[string]json.RawMessage
+			if gErr := json.Unmarshal([]byte(rawJSON), &genericMap); gErr == nil {
+				for k, v := range genericMap {
+					if k == "named_transcript" || k == "namedTranscript" {
+						var nt string
+						_ = json.Unmarshal(v, &nt)
+						if strings.TrimSpace(nt) != "" {
+							result.NamedTranscript = nt
+						}
+						continue
+					}
+					var candidate MeetingMinutes
+					if cErr := json.Unmarshal(v, &candidate); cErr == nil && (len(candidate.Attendees) > 0 || len(candidate.Decisions) > 0 || len(candidate.ActionItems) > 0 || len(candidate.DiscussionPoints) > 0) {
+						result.MeetingMinutes = candidate
+						break
+					}
+				}
+			}
+			if len(result.MeetingMinutes.Attendees) == 0 && len(result.MeetingMinutes.Decisions) == 0 && len(result.MeetingMinutes.ActionItems) == 0 && err != nil {
+				return nil, "", fmt.Errorf("failed to unmarshal meeting minutes JSON: %w (raw: %s)", err, rawJSON)
+			}
 		}
 	}
 

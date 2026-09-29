@@ -91,18 +91,19 @@ func (h *ConversationHandler) CreateConversation(w http.ResponseWriter, r *http.
 		extractedMinutes, namedTranscript, mErr = h.MinutesService.ExtractAndSaveMeetingMinutes(extractCtx, id, req.Transcript)
 		if mErr != nil {
 			log.Printf("CreateConversation: meeting minutes extraction error for conversation %s: %v", id, mErr)
+			_, _ = h.DB.Exec(context.Background(), `UPDATE conversations SET status = 'completed' WHERE id = $1`, id)
 		} else {
 			log.Printf("CreateConversation: saved meeting minutes for conversation %s", id)
 			if strings.TrimSpace(namedTranscript) != "" {
 				req.Transcript = namedTranscript
-				_, _ = h.DB.Exec(context.Background(), `UPDATE conversations SET transcript = $1 WHERE id = $2`, req.Transcript, id)
 			}
+			_, _ = h.DB.Exec(context.Background(), `UPDATE conversations SET transcript = $1, status = 'completed' WHERE id = $2`, req.Transcript, id)
 		}
 	}
 
 	writeJSON(w, http.StatusCreated, conversationResponse{
 		ID:             id.String(),
-		Status:         "processing",
+		Status:         "completed",
 		Transcript:     req.Transcript,
 		MeetingMinutes: extractedMinutes,
 	})

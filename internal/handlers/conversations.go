@@ -169,37 +169,7 @@ func (h *ConversationHandler) UploadAudio(w http.ResponseWriter, r *http.Request
 
 	log.Printf("UploadAudio: saved audio file locally to %s", localFilePath)
 
-	// Open the saved local file for transcription.
-	savedAudioFile, err := os.Open(localFilePath)
-	if err != nil {
-		log.Printf("UploadAudio: failed to open saved audio file: %v", err)
-		http.Error(w, "Failed to read saved audio file", http.StatusInternalServerError)
-		return
-	}
-	defer savedAudioFile.Close()
-
-	// Transcribe via the injected service (Gemini under the hood).
-	transcript, err := h.TranscriptionService.Transcribe(r.Context(), savedAudioFile, cleanFilename)
-	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			log.Printf("UploadAudio: transcription cancelled/timed out: %v", err)
-			http.Error(w, "Request timed out", http.StatusGatewayTimeout)
-			return
-		}
-		log.Printf("UploadAudio: transcription error: %v", err)
-		http.Error(w, "Transcription failed", http.StatusBadGateway)
-		return
-	}
-
-	if transcript == "" {
-		log.Printf("UploadAudio: empty transcript returned for %q", cleanFilename)
-		http.Error(w, "Transcription returned an empty result", http.StatusUnprocessableEntity)
-		return
-	}
-
-	log.Printf("UploadAudio: transcription succeeded (%d chars), saving to database", len(transcript))
-
-	// Check if a conversation with this audio filename already exists to replace it instead of duplicating.
+	// Check if a conversation with this audio filename already exists to update it instead of duplicating.
 	var id uuid.UUID
 	var existing bool
 	err = h.DB.QueryRow(r.Context(),
@@ -217,15 +187,15 @@ func (h *ConversationHandler) UploadAudio(w http.ResponseWriter, r *http.Request
 	}
 
 	if existing {
-		// Update existing conversation record.
+		// Update existing conversation record to processing status.
 		_, err = h.DB.Exec(
 			r.Context(),
 			`UPDATE conversations SET transcript = $1, status = $2, created_at = NOW() WHERE id = $3`,
-			transcript, "completed", id,
+			"", "processing", id,
 		)
 		if err != nil {
 			log.Printf("UploadAudio: db update error: %v", err)
-			http.Error(w, "Failed to update transcript", http.StatusInternalServerError)
+			http.Error(w, "Failed to update conversation status", http.StatusInternalServerError)
 			return
 		}
 
@@ -235,49 +205,87 @@ func (h *ConversationHandler) UploadAudio(w http.ResponseWriter, r *http.Request
 		// Remove any older duplicate conversation records with the same filename.
 		_, _ = h.DB.Exec(r.Context(), `DELETE FROM conversations WHERE audio_filename = $1 AND id != $2`, cleanFilename, id)
 
-		log.Printf("UploadAudio: replaced existing conversation %s (audio: %s)", id, cleanFilename)
+		log.Printf("UploadAudio: reset conversation %s (audio: %s) to 'processing'", id, cleanFilename)
 	} else {
-		// Persist new conversation to PostgreSQL.
+		// Persist new conversation to PostgreSQL with status processing.
 		_, err = h.DB.Exec(
 			r.Context(),
-			`INSERT INTO conversations (id, transcript, status, audio_filename) VALUES ($1, $2, $3, $4)`,
-			id, transcript, "completed", cleanFilename,
+			`INSERT INTO conversations (id, transcript, status, audio_filename, created_at) VALUES ($1, $2, $3, $4, NOW())`,
+			id, "", "processing", cleanFilename,
 		)
 		if err != nil {
 			log.Printf("UploadAudio: db insert error: %v", err)
-			http.Error(w, "Failed to save transcript", http.StatusInternalServerError)
+			http.Error(w, "Failed to save initial conversation", http.StatusInternalServerError)
 			return
 		}
 
-		log.Printf("UploadAudio: saved new conversation %s (audio: %s)", id, cleanFilename)
+		log.Printf("UploadAudio: created new conversation %s (audio: %s) with status 'processing'", id, cleanFilename)
 	}
 
-	var extractedMinutes *minutes.MeetingMinutes
+	// Launch transcription and MoM extraction asynchronously in the background.
+	go h.processAudioBackground(id, localFilePath, cleanFilename)
+
+	// Return immediately with 200 OK so the HTTP request completes in <1s and never times out.
+	writeJSON(w, http.StatusOK, conversationResponse{
+		ID:            id.String(),
+		Status:        "processing",
+		Transcript:    "",
+		AudioFilename: &cleanFilename,
+	})
+}
+
+// processAudioBackground performs audio transcription and MoM generation in a detached background goroutine.
+func (h *ConversationHandler) processAudioBackground(id uuid.UUID, localFilePath, cleanFilename string) {
+	log.Printf("processAudioBackground: starting transcription for conversation %s (%s)", id, cleanFilename)
+
+	savedAudioFile, err := os.Open(localFilePath)
+	if err != nil {
+		log.Printf("processAudioBackground: failed to open audio file %s: %v", localFilePath, err)
+		_, _ = h.DB.Exec(context.Background(), `UPDATE conversations SET status = 'failed' WHERE id = $1`, id)
+		return
+	}
+	defer savedAudioFile.Close()
+
+	// Use an independent context with a generous 10-minute timeout for the entire background flow.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	// Transcribe via Gemini.
+	transcript, err := h.TranscriptionService.Transcribe(ctx, savedAudioFile, cleanFilename)
+	if err != nil {
+		log.Printf("processAudioBackground: transcription failed for conversation %s: %v", id, err)
+		_, _ = h.DB.Exec(context.Background(), `UPDATE conversations SET status = 'failed' WHERE id = $1`, id)
+		return
+	}
+
+	if strings.TrimSpace(transcript) == "" {
+		log.Printf("processAudioBackground: empty transcript returned for conversation %s", id)
+		_, _ = h.DB.Exec(context.Background(), `UPDATE conversations SET status = 'failed' WHERE id = $1`, id)
+		return
+	}
+
+	log.Printf("processAudioBackground: transcription succeeded for %s (%d chars)", id, len(transcript))
+	_, _ = h.DB.Exec(context.Background(), `UPDATE conversations SET transcript = $1 WHERE id = $2`, transcript, id)
+
+	// Extract and save Meeting Minutes (with dynamic speaker name resolution).
 	if h.MinutesService != nil {
-		log.Printf("UploadAudio: extracting meeting minutes for conversation %s", id)
-		var mErr error
-		var namedTranscript string
-		extractCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		extractedMinutes, namedTranscript, mErr = h.MinutesService.ExtractAndSaveMeetingMinutes(extractCtx, id, transcript)
+		log.Printf("processAudioBackground: extracting meeting minutes for conversation %s", id)
+		_, namedTranscript, mErr := h.MinutesService.ExtractAndSaveMeetingMinutes(ctx, id, transcript)
 		if mErr != nil {
-			log.Printf("UploadAudio: meeting minutes extraction error for conversation %s: %v", id, mErr)
-		} else {
-			log.Printf("UploadAudio: saved meeting minutes for conversation %s", id)
-			if strings.TrimSpace(namedTranscript) != "" {
-				transcript = namedTranscript
-				_, _ = h.DB.Exec(context.Background(), `UPDATE conversations SET transcript = $1 WHERE id = $2`, transcript, id)
-			}
+			log.Printf("processAudioBackground: meeting minutes extraction error for conversation %s: %v", id, mErr)
+			// Mark completed with the transcript we already have even if MoM failed
+			_, _ = h.DB.Exec(context.Background(), `UPDATE conversations SET status = 'completed' WHERE id = $1`, id)
+			return
+		}
+		if strings.TrimSpace(namedTranscript) != "" {
+			transcript = namedTranscript
 		}
 	}
 
-	writeJSON(w, http.StatusCreated, conversationResponse{
-		ID:             id.String(),
-		Status:         "completed",
-		Transcript:     transcript,
-		AudioFilename:  &cleanFilename,
-		MeetingMinutes: extractedMinutes,
-	})
+	_, _ = h.DB.Exec(context.Background(),
+		`UPDATE conversations SET transcript = $1, status = 'completed' WHERE id = $2`,
+		transcript, id)
+	log.Printf("processAudioBackground: successfully completed conversation %s", id)
 }
 
 // ConversationDetail represents a complete conversation with its associated meeting minutes.

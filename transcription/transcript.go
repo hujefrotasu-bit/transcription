@@ -192,25 +192,70 @@ func (s *GeminiTranscriptionService) Transcribe(ctx context.Context, audio io.Re
 
 // resolveSpeakerNames uses Gemini to identify real names from intros/dialogue
 // and replaces generic "Speaker X:" labels with actual names. If a speaker's
-// name is not mentioned, it retains "Speaker X:".
+// SpeakerMappingItem represents an identified speaker's voice mapping.
+type SpeakerMappingItem struct {
+	SpeakerID  string   `json:"speaker_id"`
+	Name       *string  `json:"name"`
+	Confidence float64  `json:"confidence"`
+	Evidence   []string `json:"evidence"`
+}
+
+type SpeakerIdentityMap struct {
+	Speakers []SpeakerMappingItem `json:"speakers"`
+}
+
+// resolveSpeakerNames uses Gemini to analyze diarized speakers and their dialogue
+// to build a voice-to-identity map without rewriting or modifying the transcript.
 func (s *GeminiTranscriptionService) resolveSpeakerNames(ctx context.Context, rawTranscript string) string {
 	trimmed := strings.TrimSpace(rawTranscript)
 	if trimmed == "" {
 		return rawTranscript
 	}
 
-	prompt := fmt.Sprintf(`You are an expert dialogue editor. You are given a meeting transcript where speakers are currently labeled with generic tags like "Speaker 1:", "Speaker 2:", etc.
+	prompt := fmt.Sprintf(`You are a speaker identity and voice-association system for a multi-person meeting transcript.
 
-TASK:
-Identify and replace each generic speaker label with the actual name of the speaker IF their name was mentioned, introduced, self-introduced, or clearly established in the conversation.
+You are given a transcript produced by a speech-to-text system with speaker diarization.
 
-RULES:
-1. When a speaker's identity or name is known from introductions or dialogue (e.g. self-introduction, direct address, roll call, or context), use their actual name as the speaker label (e.g. "Rita:", "Lucy Strokes:", "Jason Somerville:", "Julian Geddis:", "Sue Carpenter:", "Frank Lyons:").
-2. CRITICAL FOR SPEAKER ATTRIBUTION: The speech diarizer often assigns different people to the same generic speaker tag. Whenever someone introduces themselves (e.g. "I'm Sue Carpenter with a D, and I'm the sales director", "I'm Julian Geddis", "I'm Jason Somerville"), that specific line MUST be labeled with THAT person's name. Never attribute "I'm Sue Carpenter..." to Rita or anyone else.
-3. LATE ARRIVALS: When someone arrives late and speaks (e.g. "Sorry, I got held up..."), label them with their name (e.g. "Frank Lyons:").
-4. If a speaker's name was NEVER mentioned or remains unknown/uncertain, KEEP their generic label unchanged (e.g. "Speaker 3:").
-5. CRITICAL: Preserve every single spoken word, sentence, interruption, and punctuation verbatim. DO NOT summarize, omit, rephrase, or edit any of the spoken dialogue.
-6. Output ONLY the updated transcript. No markdown fences, no preamble, no commentary.
+The transcript contains speaker identifiers such as:
+Speaker 1:
+Speaker 2:
+Speaker 3:
+
+Your task is to determine which real person each diarized speaker represents by analyzing conversational evidence.
+
+IMPORTANT: This is an identity-mapping task, NOT a transcription task.
+DO NOT rewrite the transcript.
+DO NOT correct the transcript.
+DO NOT change any spoken words.
+DO NOT generate a new transcript.
+ONLY return the speaker-to-person mapping as JSON.
+
+IDENTITY ANALYSIS RULES:
+1. SELF-INTRODUCTION: If a speaker says "My name is...", "I'm...", etc., associate that speaker's diarized voice with that name.
+2. DIRECT ADDRESS: If someone addresses a speaker ("What do you think?"), and the diarized speaker responds immediately as the addressed participant, use this as evidence.
+3. INTRODUCTION BY ANOTHER PERSON: If someone introduces a colleague and the diarization shows which speaker responds, associate that speaker ID with that name.
+4. VOICE CONSISTENCY: Treat each diarized speaker ID as representing one consistent voice throughout the recording.
+5. DO NOT CONFUSE SPEAKERS: Do not assign a name to someone simply because they mentioned that name. Only assign the name to the voice that is addressed or introduces themselves.
+6. UNKNOWN SPEAKERS: If you cannot establish a speaker's real name with sufficient evidence, DO NOT GUESS. Return "name": null.
+7. NEVER INVENT PEOPLE: Only use names explicitly established in the conversation.
+8. PRESERVE SPEAKER IDs: Never rename or modify Speaker 1, Speaker 2, etc. in your mapping keys.
+
+OUTPUT FORMAT (JSON ONLY, NO MARKDOWN, NO OTHER TEXT):
+{
+  "speakers": [
+    {
+      "speaker_id": "Speaker 1",
+      "name": "Full Name Or null",
+      "confidence": 0.95,
+      "evidence": ["Exact conversational evidence from dialogue"]
+    }
+  ]
+}
+
+CONFIDENCE GUIDELINES:
+- 0.95 - 1.00: Identity explicitly established and confirmed.
+- 0.80 - 0.94: Identity strongly supported by conversational clues.
+- Below 0.80: Do not assign a name. Return null.
 
 TRANSCRIPT:
 %s`, trimmed)
@@ -294,19 +339,52 @@ TRANSCRIPT:
 		output = strings.TrimSpace(sb.String())
 	}
 
-	// Clean any markdown code fences if Gemini wrapped it in ```
-	output = strings.TrimPrefix(output, "```transcript")
-	output = strings.TrimPrefix(output, "```text")
+	// Clean any markdown code fences if wrapped
+	output = strings.TrimPrefix(output, "```json")
 	output = strings.TrimPrefix(output, "```")
 	output = strings.TrimSuffix(output, "```")
 	output = strings.TrimSpace(output)
 
-	if output != "" {
-		log.Printf("resolveSpeakerNames: successfully resolved speaker names (%d chars)", len(output))
-		return output
+	var idMap SpeakerIdentityMap
+	if err := json.Unmarshal([]byte(output), &idMap); err != nil {
+		log.Printf("resolveSpeakerNames: failed to decode speaker map JSON: %v (raw: %s)", err, output)
+		return rawTranscript
 	}
 
-	return rawTranscript
+	// Build verified lookup map (confidence >= 0.80 and non-empty name)
+	resolvedMap := make(map[string]string)
+	for _, spk := range idMap.Speakers {
+		if spk.Name != nil && strings.TrimSpace(*spk.Name) != "" && spk.Confidence >= 0.80 {
+			cleanName := strings.TrimSpace(*spk.Name)
+			// Ensure speaker ID is normalized e.g. "Speaker 1"
+			spkKey := strings.TrimSpace(spk.SpeakerID)
+			resolvedMap[spkKey] = cleanName
+			log.Printf("resolveSpeakerNames: mapped %s -> %s (conf: %.2f)", spkKey, cleanName, spk.Confidence)
+		}
+	}
+
+	if len(resolvedMap) == 0 {
+		log.Printf("resolveSpeakerNames: no high-confidence speaker names resolved; keeping generic speaker labels")
+		return rawTranscript
+	}
+
+	// Deterministically replace "Speaker X:" labels line by line without altering spoken words
+	lines := strings.Split(rawTranscript, "\n")
+	for i, line := range lines {
+		trimmedLine := strings.TrimSpace(line)
+		for spkID, realName := range resolvedMap {
+			prefix := spkID + ":"
+			if strings.HasPrefix(trimmedLine, prefix) {
+				restOfLine := strings.TrimPrefix(trimmedLine, prefix)
+				lines[i] = realName + ":" + restOfLine
+				break
+			}
+		}
+	}
+
+	finalTranscript := strings.Join(lines, "\n")
+	log.Printf("resolveSpeakerNames: successfully replaced speaker labels with %d resolved names", len(resolvedMap))
+	return finalTranscript
 }
 
 // ─────────────────────────────────────────────

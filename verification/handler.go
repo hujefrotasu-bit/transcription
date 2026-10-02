@@ -2,6 +2,7 @@ package verification
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -170,6 +171,18 @@ func (h *Handler) HandleAudit(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// HandleVersions routes GET to retrieve versions and DELETE to delete a version.
+func (h *Handler) HandleVersions(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		h.HandleGetVersions(w, r)
+	case http.MethodDelete:
+		h.HandleDeleteVersion(w, r)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
 // HandleGetVersions returns all versions for a given conversation.
 // GET /api/verification/versions?conversation_id=...
 func (h *Handler) HandleGetVersions(w http.ResponseWriter, r *http.Request) {
@@ -203,6 +216,62 @@ func (h *Handler) HandleGetVersions(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(versions)
+}
+
+// HandleDeleteVersion removes a specific version by its UUID or (conversation_id + version_number).
+// DELETE /api/verification/versions?id=...
+func (h *Handler) HandleDeleteVersion(w http.ResponseWriter, r *http.Request) {
+	if h.DB == nil {
+		http.Error(w, "Database not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	versionIDStr := r.URL.Query().Get("id")
+	convIDStr := r.URL.Query().Get("conversation_id")
+	verNumStr := r.URL.Query().Get("version_number")
+
+	if versionIDStr != "" {
+		vID, err := uuid.Parse(versionIDStr)
+		if err != nil {
+			http.Error(w, "Invalid version id: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		res, err := h.DB.Exec(r.Context(), "DELETE FROM meeting_minutes_versions WHERE id = $1", vID)
+		if err != nil {
+			http.Error(w, "Failed to delete version: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if res.RowsAffected() == 0 {
+			http.Error(w, "Version not found", http.StatusNotFound)
+			return
+		}
+	} else if convIDStr != "" && verNumStr != "" {
+		cID, err := uuid.Parse(convIDStr)
+		if err != nil {
+			http.Error(w, "Invalid conversation_id: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		var verNum int
+		if _, err := fmt.Sscanf(verNumStr, "%d", &verNum); err != nil {
+			http.Error(w, "Invalid version_number: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		res, err := h.DB.Exec(r.Context(), "DELETE FROM meeting_minutes_versions WHERE conversation_id = $1 AND version_number = $2", cID, verNum)
+		if err != nil {
+			http.Error(w, "Failed to delete version: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if res.RowsAffected() == 0 {
+			http.Error(w, "Version not found", http.StatusNotFound)
+			return
+		}
+	} else {
+		http.Error(w, "Either 'id' or both 'conversation_id' and 'version_number' required", http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
 }
 
 func toJSONString(val any) (string, error) {

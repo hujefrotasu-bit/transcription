@@ -19,7 +19,7 @@ func NewRouter(convHandler *transcription.ConversationHandler, verifHandler *ver
 	// Automated Fable Verification and Version History endpoints
 	if verifHandler != nil {
 		mux.HandleFunc("/api/verification/audit", verifHandler.HandleAudit)
-		mux.HandleFunc("/api/verification/versions", verifHandler.HandleGetVersions)
+		mux.HandleFunc("/api/verification/versions", verifHandler.HandleVersions)
 	}
 
 	return mux

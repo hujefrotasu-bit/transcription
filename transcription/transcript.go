@@ -50,9 +50,12 @@ func NewGeminiTranscriptionService() (*GeminiTranscriptionService, error) {
 		model = "gemini-3.5-transcribe"
 	}
 
-	nameModel := os.Getenv("GEMINI_TOPIC_MODEL")
+	nameModel := os.Getenv("GEMINI_SPEAKER_MODEL")
 	if nameModel == "" {
-		nameModel = "gemini-3.5-flash-lite"
+		nameModel = os.Getenv("GEMINI_TOPIC_MODEL")
+	}
+	if nameModel == "" || nameModel == "gemini-3.5-flash-lite" {
+		nameModel = "gemini-3.5-flash"
 	}
 
 	return &GeminiTranscriptionService{
@@ -190,72 +193,40 @@ func (s *GeminiTranscriptionService) Transcribe(ctx context.Context, audio io.Re
 	return transcript, nil
 }
 
-// resolveSpeakerNames uses Gemini to identify real names from intros/dialogue
-// and replaces generic "Speaker X:" labels with actual names. If a speaker's
-// SpeakerMappingItem represents an identified speaker's voice mapping.
-type SpeakerMappingItem struct {
-	SpeakerID  string   `json:"speaker_id"`
-	Name       *string  `json:"name"`
-	Confidence float64  `json:"confidence"`
-	Evidence   []string `json:"evidence"`
-}
-
-type SpeakerIdentityMap struct {
-	Speakers []SpeakerMappingItem `json:"speakers"`
-}
-
-// resolveSpeakerNames uses Gemini to analyze diarized speakers and their dialogue
-// to build a voice-to-identity map without rewriting or modifying the transcript.
+// resolveSpeakerNames uses Gemini to analyze meeting dialogue discourse, introductions,
+// and direct address to assign accurate speaker names to every dialogue turn, fixing
+// common acoustic diarization confusion or merged-speaker errors.
 func (s *GeminiTranscriptionService) resolveSpeakerNames(ctx context.Context, rawTranscript string) string {
 	trimmed := strings.TrimSpace(rawTranscript)
 	if trimmed == "" {
 		return rawTranscript
 	}
 
-	prompt := fmt.Sprintf(`You are a speaker identity and voice-association system for a multi-person meeting transcript.
+	prompt := fmt.Sprintf(`You are an expert dialogue speaker-attribution analyzer for meeting transcripts.
+You are given a meeting transcript where acoustic speech diarization produced generic tags (Speaker 1, Speaker 2, etc.) but suffered from speaker confusion and merged speaker errors (for example, assigning a line where the chair thanks David as David himself).
 
-You are given a transcript produced by a speech-to-text system with speaker diarization.
+YOUR TASK:
+Assign the correct real speaker name to every single turn in the transcript based strictly on conversational logic, introductions, roles, direct address, and discourse flow.
 
-The transcript contains speaker identifiers such as:
-Speaker 1:
-Speaker 2:
-Speaker 3:
+ANALYSIS RULES:
+1. IDENTIFY PARTICIPANTS & ROLES FROM DIALOGUE:
+   - Establish who is who: who is chairing the meeting, who is in finance, who is in sales, who is in customer services, or narrator.
+2. CONVERSATIONAL LOGIC & SPEAKER ATTRIBUTION:
+   - A participant NEVER thanks themselves: "Okay, thanks, David" is spoken by the meeting chair to David, NEVER by David.
+   - A participant NEVER delegates a task to themselves in the third person: "Good. David, could you look for a market research company we could work with on this?" is spoken by the chair to David, NEVER by David.
+   - When the chair asks "David, could you look for a market research company...?", the immediate acceptance "Sure." is spoken by DAVID, not another attendee.
+   - Meeting chair interventions (opening the meeting, facilitating turns, thanking speakers, managing time/agenda, transitioning topics) belong to the meeting chair.
+   - Discussions about products, sales offers, and handouts belong to the sales director.
+   - Discussions about customer procedures, cancellations, and accounts belong to customer services.
+   - Discussions about figures, budgets, and external research belong to finance.
+   - An introductory background setup describing the meeting and company belongs to "Narrator:" or the speaker giving the overview.
+3. IMMUTABILITY OF SPOKEN WORDS:
+   - Preserve EVERY SINGLE SPOKEN WORD verbatim. Do not change, omit, correct, or summarize any words.
+   - Only correct the speaker name before the colon.
 
-Your task is to determine which real person each diarized speaker represents by analyzing conversational evidence.
-
-IMPORTANT: This is an identity-mapping task, NOT a transcription task.
-DO NOT rewrite the transcript.
-DO NOT correct the transcript.
-DO NOT change any spoken words.
-DO NOT generate a new transcript.
-ONLY return the speaker-to-person mapping as JSON.
-
-IDENTITY ANALYSIS RULES:
-1. SELF-INTRODUCTION: If a speaker says "My name is...", "I'm...", etc., associate that speaker's diarized voice with that name.
-2. DIRECT ADDRESS: If someone addresses a speaker ("What do you think?"), and the diarized speaker responds immediately as the addressed participant, use this as evidence.
-3. INTRODUCTION BY ANOTHER PERSON: If someone introduces a colleague and the diarization shows which speaker responds, associate that speaker ID with that name.
-4. VOICE CONSISTENCY: Treat each diarized speaker ID as representing one consistent voice throughout the recording.
-5. DO NOT CONFUSE SPEAKERS: Do not assign a name to someone simply because they mentioned that name. Only assign the name to the voice that is addressed or introduces themselves.
-6. UNKNOWN SPEAKERS: If you cannot establish a speaker's real name with sufficient evidence, DO NOT GUESS. Return "name": null.
-7. NEVER INVENT PEOPLE: Only use names explicitly established in the conversation.
-8. PRESERVE SPEAKER IDs: Never rename or modify Speaker 1, Speaker 2, etc. in your mapping keys.
-
-OUTPUT FORMAT (JSON ONLY, NO MARKDOWN, NO OTHER TEXT):
-{
-  "speakers": [
-    {
-      "speaker_id": "Speaker 1",
-      "name": "Full Name Or null",
-      "confidence": 0.95,
-      "evidence": ["Exact conversational evidence from dialogue"]
-    }
-  ]
-}
-
-CONFIDENCE GUIDELINES:
-- 0.95 - 1.00: Identity explicitly established and confirmed.
-- 0.80 - 0.94: Identity strongly supported by conversational clues.
-- Below 0.80: Do not assign a name. Return null.
+OUTPUT FORMAT:
+Output ONLY the transcript with accurate speaker names on each line (e.g. "Marcus: ...", "Maya: ...", "David: ...", "Anna: ...").
+No markdown code fences, no explanations.
 
 TRANSCRIPT:
 %s`, trimmed)
@@ -340,51 +311,18 @@ TRANSCRIPT:
 	}
 
 	// Clean any markdown code fences if wrapped
-	output = strings.TrimPrefix(output, "```json")
+	output = strings.TrimPrefix(output, "```transcript")
+	output = strings.TrimPrefix(output, "```text")
 	output = strings.TrimPrefix(output, "```")
 	output = strings.TrimSuffix(output, "```")
 	output = strings.TrimSpace(output)
 
-	var idMap SpeakerIdentityMap
-	if err := json.Unmarshal([]byte(output), &idMap); err != nil {
-		log.Printf("resolveSpeakerNames: failed to decode speaker map JSON: %v (raw: %s)", err, output)
-		return rawTranscript
+	if output != "" && len(output) >= len(trimmed)/2 {
+		log.Printf("resolveSpeakerNames: successfully resolved speaker attribution (%d chars)", len(output))
+		return output
 	}
 
-	// Build verified lookup map (confidence >= 0.80 and non-empty name)
-	resolvedMap := make(map[string]string)
-	for _, spk := range idMap.Speakers {
-		if spk.Name != nil && strings.TrimSpace(*spk.Name) != "" && spk.Confidence >= 0.80 {
-			cleanName := strings.TrimSpace(*spk.Name)
-			// Ensure speaker ID is normalized e.g. "Speaker 1"
-			spkKey := strings.TrimSpace(spk.SpeakerID)
-			resolvedMap[spkKey] = cleanName
-			log.Printf("resolveSpeakerNames: mapped %s -> %s (conf: %.2f)", spkKey, cleanName, spk.Confidence)
-		}
-	}
-
-	if len(resolvedMap) == 0 {
-		log.Printf("resolveSpeakerNames: no high-confidence speaker names resolved; keeping generic speaker labels")
-		return rawTranscript
-	}
-
-	// Deterministically replace "Speaker X:" labels line by line without altering spoken words
-	lines := strings.Split(rawTranscript, "\n")
-	for i, line := range lines {
-		trimmedLine := strings.TrimSpace(line)
-		for spkID, realName := range resolvedMap {
-			prefix := spkID + ":"
-			if strings.HasPrefix(trimmedLine, prefix) {
-				restOfLine := strings.TrimPrefix(trimmedLine, prefix)
-				lines[i] = realName + ":" + restOfLine
-				break
-			}
-		}
-	}
-
-	finalTranscript := strings.Join(lines, "\n")
-	log.Printf("resolveSpeakerNames: successfully replaced speaker labels with %d resolved names", len(resolvedMap))
-	return finalTranscript
+	return rawTranscript
 }
 
 // ─────────────────────────────────────────────

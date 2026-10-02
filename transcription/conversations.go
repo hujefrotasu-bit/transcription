@@ -178,19 +178,15 @@ func (h *ConversationHandler) CreateConversation(w http.ResponseWriter, r *http.
 	if h.MinutesService != nil {
 		log.Printf("CreateConversation: extracting meeting minutes for conversation %s", id)
 		var mErr error
-		var namedTranscript string
 		extractCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
 
-		extractedMinutes, namedTranscript, tokenUsage, mErr = h.MinutesService.ExtractAndSaveMeetingMinutes(extractCtx, id, cleanedTranscript)
+		extractedMinutes, _, tokenUsage, mErr = h.MinutesService.ExtractAndSaveMeetingMinutes(extractCtx, id, cleanedTranscript)
 		if mErr != nil {
 			log.Printf("CreateConversation: meeting minutes extraction error for conversation %s: %v", id, mErr)
 			_, _ = h.DB.Exec(context.Background(), `UPDATE conversations SET status = 'completed' WHERE id = $1`, id)
 		} else {
 			log.Printf("CreateConversation: saved meeting minutes for conversation %s", id)
-			if strings.TrimSpace(namedTranscript) != "" && len(strings.TrimSpace(namedTranscript)) >= len(cleanedTranscript)/2 {
-				cleanedTranscript = namedTranscript
-			}
 			_, _ = h.DB.Exec(context.Background(), `UPDATE conversations SET transcript = $1, status = 'completed' WHERE id = $2`, cleanedTranscript, id)
 
 			// 2. Automated Fable verification and version management
@@ -426,15 +422,12 @@ func (h *ConversationHandler) processAudioBackground(id uuid.UUID, localFilePath
 	// Extract and save Meeting Minutes (with dynamic speaker name resolution).
 	if h.MinutesService != nil {
 		log.Printf("processAudioBackground: extracting meeting minutes for conversation %s", id)
-		mom, namedTranscript, tokenUsage, mErr := h.MinutesService.ExtractAndSaveMeetingMinutes(ctx, id, transcript)
+		mom, _, tokenUsage, mErr := h.MinutesService.ExtractAndSaveMeetingMinutes(ctx, id, transcript)
 		if mErr != nil {
 			log.Printf("processAudioBackground: meeting minutes extraction error for conversation %s: %v", id, mErr)
 			// Mark completed with the transcript we already have even if MoM failed
 			_, _ = h.DB.Exec(context.Background(), `UPDATE conversations SET status = 'completed' WHERE id = $1`, id)
 			return
-		}
-		if strings.TrimSpace(namedTranscript) != "" && len(strings.TrimSpace(namedTranscript)) >= len(transcript)/2 {
-			transcript = namedTranscript
 		}
 
 		// Automatically run Fable audit and version comparison

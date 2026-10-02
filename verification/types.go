@@ -22,6 +22,22 @@ type VerifiedItem struct {
 	TranscriptEvidence string `json:"transcript_evidence"` // Verbatim quote from original transcript
 }
 
+func (v *VerifiedItem) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		v.Field = "verified"
+		v.Claim = s
+		return nil
+	}
+	type Alias VerifiedItem
+	var a Alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*v = VerifiedItem(a)
+	return nil
+}
+
 // VerificationError describes a specific hallucination, contradiction, or mistake.
 type VerificationError struct {
 	Severity              string `json:"severity"`               // "high", "medium", "low"
@@ -32,11 +48,43 @@ type VerificationError struct {
 	CorrectionInstruction string `json:"correction_instruction"` // Exact instruction to fix it
 }
 
+func (e *VerificationError) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		e.Severity = "medium"
+		e.Problem = s
+		return nil
+	}
+	type Alias VerificationError
+	var a Alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*e = VerificationError(a)
+	return nil
+}
+
 // MissingInformation documents crucial items present in the transcript but omitted from the Meeting Minutes.
 type MissingInformation struct {
 	Field              string `json:"field"`               // e.g. "decisions", "action_items"
 	Information        string `json:"information"`         // What was omitted
 	TranscriptEvidence string `json:"transcript_evidence"` // Transcript quote proving it was discussed
+}
+
+func (m *MissingInformation) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		m.Field = "omission"
+		m.Information = s
+		return nil
+	}
+	type Alias MissingInformation
+	var a Alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*m = MissingInformation(a)
+	return nil
 }
 
 // AuditResult is the complete Fable QC evaluation of a Meeting Minutes version against the original transcript.

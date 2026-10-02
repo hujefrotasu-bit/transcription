@@ -1,0 +1,732 @@
+{
+  "total_files": 11,
+  "passed_files": 6,
+  "warn_files": 5,
+  "failed_files": 0,
+  "pass_rate": 54.54545454545454,
+  "average_score": 52.72727272727273,
+  "average_latency_sec": 33.16308928181818,
+  "total_duration_sec": 95.8594549,
+  "tiers": {
+    "Easy": {
+      "tier": "Easy",
+      "total_files": 4,
+      "passed_files": 2,
+      "warn_files": 2,
+      "failed_files": 0,
+      "pass_rate": 50,
+      "average_score": 50,
+      "average_latency_sec": 22.288264199999997,
+      "total_attendees": 19,
+      "total_action_items": 12,
+      "total_decisions": 8,
+      "total_discussions": 11,
+      "total_errors": 0
+    },
+    "Hard": {
+      "tier": "Hard",
+      "total_files": 0,
+      "passed_files": 0,
+      "warn_files": 0,
+      "failed_files": 0,
+      "pass_rate": 0,
+      "average_score": 0,
+      "average_latency_sec": 0,
+      "total_attendees": 0,
+      "total_action_items": 0,
+      "total_decisions": 0,
+      "total_discussions": 0,
+      "total_errors": 0
+    },
+    "Medium": {
+      "tier": "Medium",
+      "total_files": 7,
+      "passed_files": 4,
+      "warn_files": 3,
+      "failed_files": 0,
+      "pass_rate": 57.14285714285714,
+      "average_score": 54.285714285714285,
+      "average_latency_sec": 39.37727504285714,
+      "total_attendees": 58,
+      "total_action_items": 55,
+      "total_decisions": 20,
+      "total_discussions": 26,
+      "total_errors": 1
+    }
+  },
+  "analysis_notes": [
+    "Evaluated 11 files across active difficulty tiers with an overall average score of 52.7%."
+  ],
+  "results": [
+    {
+      "filename": "transcript_01.txt",
+      "file_type": "transcript",
+      "difficulty": "Easy",
+      "duration": 28870238800,
+      "duration_seconds": 28.8702388,
+      "audit_score": 100,
+      "attendees_count": 3,
+      "attendees": [
+        "Marcus",
+        "Maya",
+        "David"
+      ],
+      "action_items_count": 2,
+      "decisions_count": 0,
+      "discussions_count": 1,
+      "issues_count": 1,
+      "errors_count": 0,
+      "status": "PASS",
+      "audit_report": {
+        "score": 100,
+        "score_breakdown": {
+          "grounding_and_accuracy": 50,
+          "completeness": 30,
+          "attribution": 20,
+          "total_score": 100
+        },
+        "verified": true,
+        "what_is_right": [
+          {
+            "field": "",
+            "claim": "",
+            "transcript_evidence": "Marcus: Good morning everyone. Let's keep this short. I want to hear a quick update from each person."
+          },
+          {
+            "field": "",
+            "claim": "",
+            "transcript_evidence": "Maya: Yesterday I finished the sales report. I also updated the numbers for September. Today I'll check the remaining invoices."
+          },
+          {
+            "field": "",
+            "claim": "",
+            "transcript_evidence": "David: I finished the website changes we discussed yesterday. The new pricing page is now live. Today I'll test it on mobile."
+          },
+          {
+            "field": "",
+            "claim": "",
+            "transcript_evidence": "Marcus: Great. David, please fix the spacing issue today."
+          },
+          {
+            "field": "",
+            "claim": "",
+            "transcript_evidence": "Maya: I'll have the review finished by this afternoon."
+          },
+          {
+            "field": "",
+            "claim": "",
+            "transcript_evidence": "David: No major problems. I just need to fix one small spacing issue."
+          }
+        ],
+        "what_is_wrong": [],
+        "missing_information": [],
+        "improvement_summary": "The generated minutes are fully grounded, complete, and correctly attributed with no hallucinations or omissions. All discussion points and both explicit action items with owners and deadlines are accurately captured from the transcript. No corrections are required."
+      }
+    },
+    {
+      "filename": "transcript_02.txt",
+      "file_type": "transcript",
+      "difficulty": "Easy",
+      "duration": 31338012400,
+      "duration_seconds": 31.3380124,
+      "audit_score": 100,
+      "attendees_count": 3,
+      "attendees": [
+        "Anna",
+        "John",
+        "Sarah"
+      ],
+      "action_items_count": 2,
+      "decisions_count": 1,
+      "discussions_count": 1,
+      "issues_count": 0,
+      "errors_count": 0,
+      "status": "PASS",
+      "audit_report": {
+        "score": 100,
+        "score_breakdown": {
+          "grounding_and_accuracy": 50,
+          "completeness": 30,
+          "attribution": 20,
+          "total_score": 100
+        },
+        "verified": true,
+        "what_is_right": [
+          {
+            "field": "attendees",
+            "claim": "",
+            "transcript_evidence": "Anna: Hi everyone. Let's quickly review the project before we finish for today."
+          },
+          {
+            "field": "discussion_points[0].discussion - John's design status",
+            "claim": "",
+            "transcript_evidence": "The design is almost complete. I finished the dashboard yesterday, and I only have the settings page left."
+          },
+          {
+            "field": "discussion_points[0].discussion - Sarah's database status",
+            "claim": "",
+            "transcript_evidence": "I finished the database changes. Everything is working correctly in my tests."
+          },
+          {
+            "field": "action_items[0]",
+            "claim": "",
+            "transcript_evidence": "I should be able to finish it by tomorrow afternoon."
+          },
+          {
+            "field": "action_items[0] assignment",
+            "claim": "",
+            "transcript_evidence": "John, please finish the settings page by tomorrow afternoon. Sarah, please run the full test tomorrow evening."
+          },
+          {
+            "field": "action_items[1]",
+            "claim": "",
+            "transcript_evidence": "Yes, I can test it tomorrow evening."
+          },
+          {
+            "field": "discussion_points[0].discussion - no blockers",
+            "claim": "",
+            "transcript_evidence": "No blockers from me."
+          }
+        ],
+        "what_is_wrong": [],
+        "missing_information": [],
+        "improvement_summary": "The generated minutes are fully grounded in the transcript with no hallucinations, contradictions, or omissions. All attendees, discussion points, action items, owners, and deadlines are accurately captured and correctly attributed. No corrections are required; the minutes are ready for approval."
+      }
+    },
+    {
+      "filename": "transcript_03.txt",
+      "file_type": "transcript",
+      "difficulty": "Medium",
+      "duration": 51900100800,
+      "duration_seconds": 51.9001008,
+      "audit_score": 92,
+      "attendees_count": 6,
+      "attendees": [
+        "Ishita",
+        "Nikhil",
+        "Meera",
+        "Dev",
+        "Aarav",
+        "Rohan"
+      ],
+      "action_items_count": 7,
+      "decisions_count": 1,
+      "discussions_count": 4,
+      "issues_count": 2,
+      "errors_count": 0,
+      "status": "PASS",
+      "audit_report": {
+        "score": 92,
+        "score_breakdown": {
+          "grounding_and_accuracy": 50,
+          "completeness": 22,
+          "attribution": 20,
+          "total_score": 92
+        },
+        "verified": false,
+        "what_is_right": [
+          {
+            "field": "discussion_points[0].discussion",
+            "claim": "",
+            "transcript_evidence": "Speaker 1: The staging environment is painfully slow today. | Speaker 2: I tried loading the dashboard and it took almost twelve seconds. | Ishita: Yeah, CPU isn't high. Memory looks normal too."
+          },
+          {
+            "field": "discussion_points[1].discussion",
+            "claim": "",
+            "transcript_evidence": "Nikhil: Okay, I found a query that's taking nearly six seconds. | Nikhil: The dashboard activity query. | Ishita: That's probably because we're loading all activity instead of only the latest fifty records."
+          },
+          {
+            "field": "discussion_points[1].discussion",
+            "claim": "",
+            "transcript_evidence": "Meera: I changed it yesterday. | Meera: Because I posted it in the engineering channel."
+          },
+          {
+            "field": "discussion_points[2].discussion",
+            "claim": "",
+            "transcript_evidence": "Ishita: It stopped working after the last deployment. | Ishita: It was fixed on my branch but apparently not merged."
+          },
+          {
+            "field": "decisions[0].decision",
+            "claim": "",
+            "transcript_evidence": "Speaker 4: Rohan wanted it out this afternoon. | Ishita: I need at least two hours for regression testing. | Speaker 4: Then we're probably looking at tomorrow. | Speaker 3: That's okay. | Speaker 2: I'd rather release tomorrow than rush it."
+          },
+          {
+            "field": "action_items[3].action_item",
+            "claim": "",
+            "transcript_evidence": "Speaker 4: Can someone check whether the slow query exists in production too? | Nikhil: I'll check. | Speaker 4: Don't run anything heavy against production. | Nikhil: I know."
+          },
+          {
+            "field": "next_meeting.time",
+            "claim": "",
+            "transcript_evidence": "Speaker 4: What time are we meeting again? | Speaker 3: Three."
+          }
+        ],
+        "what_is_wrong": [],
+        "missing_information": [
+          {
+            "field": "action_items",
+            "information": "",
+            "transcript_evidence": "Speaker 4: Meera, can you check the metrics from yesterday and compare them? | Meera: Already doing it."
+          },
+          {
+            "field": "attendees",
+            "information": "",
+            "transcript_evidence": "Speaker 1: The staging environment is painfully slow today. | Speaker 2: It's not just you. I tried loading the dashboard and it took almost twelve seconds. | Speaker 3: Twelve? Mine was closer to eight. | Speaker 4: Ishita, did you check the server metrics?"
+          },
+          {
+            "field": "discussion_points",
+            "information": "",
+            "transcript_evidence": "Speaker 3: Maybe we should add an index. | Nikhil: That might help, but let's confirm the query plan first. | Speaker 4: Good point."
+          }
+        ],
+        "improvement_summary": "Minutes are highly accurate with correct numbers, decisions, and 7 of 8 action items properly attributed. To reach full completeness, add the missing action item for Meera to check and compare metrics from yesterday, and expand the attendee list to include Speakers 1-4 who participated actively. Optionally note the brief index/query-plan discussion for full recall."
+      }
+    },
+    {
+      "filename": "transcript_04.txt",
+      "file_type": "transcript",
+      "difficulty": "Medium",
+      "duration": 69207407000,
+      "duration_seconds": 69.207407,
+      "audit_score": 88,
+      "attendees_count": 10,
+      "attendees": [
+        "Speaker 1",
+        "Speaker 2",
+        "Speaker 3",
+        "Speaker 4",
+        "Meera",
+        "Dev",
+        "Nikhil",
+        "Ishita",
+        "Rohan",
+        "Aarav"
+      ],
+      "action_items_count": 4,
+      "decisions_count": 3,
+      "discussions_count": 5,
+      "issues_count": 1,
+      "errors_count": 1,
+      "status": "PASS",
+      "audit_report": {
+        "score": 88,
+        "score_breakdown": {
+          "grounding_and_accuracy": 50,
+          "completeness": 18,
+          "attribution": 20,
+          "total_score": 88
+        },
+        "verified": false,
+        "what_is_right": [
+          {
+            "field": "discussion_points[0].discussion",
+            "claim": "",
+            "transcript_evidence": "Speaker 1: The first load went from around one point eight seconds to almost three. | Speaker 1: Most of the increase is coming from the hero video."
+          },
+          {
+            "field": "discussion_points[1].discussion",
+            "claim": "",
+            "transcript_evidence": "Meera: Around sixty percent. | Speaker 1: Could we use a poster image on mobile and keep the video on desktop? | Speaker 2: Yes, that's probably the easiest solution."
+          },
+          {
+            "field": "discussion_points[2].discussion",
+            "claim": "",
+            "transcript_evidence": "Nikhil: Already checked. The animation library is adding around three hundred kilobytes. | Speaker 4: The floating cards and the continuous background movement. | Speaker 2: Then remove the floating cards. | Speaker 1: I actually like the background movement."
+          },
+          {
+            "field": "decisions[2]",
+            "claim": "",
+            "transcript_evidence": "Speaker 4: We can finish the technical work today and test tomorrow morning. | Speaker 2: That sounds more realistic. | Aarav: Yeah, as long as we don't skip the performance test."
+          },
+          {
+            "field": "action_items[2].owner",
+            "claim": "",
+            "transcript_evidence": "Speaker 3: Ishita, can you check whether those are actually affecting conversion? | Ishita: I can look at the session recordings."
+          },
+          {
+            "field": "action_items[3]",
+            "claim": "",
+            "transcript_evidence": "Speaker 4: Yes, but I want Meera to validate it before we deploy. | Meera: I'll check it this afternoon. | Speaker 3: Meera, SEO validation. | Meera: I'll do it."
+          }
+        ],
+        "what_is_wrong": [
+          {
+            "severity": "high",
+            "field": "action_items",
+            "generated_value": "Only 4 action items listed; no action item for Nikhil bundle analysis",
+            "problem": "Omitted explicit action item assigned to Nikhil. Transcript explicitly assigns bundle size check and bundle analysis to Nikhil, which is missing from minutes.",
+            "transcript_evidence": "Speaker 3: Nikhil, can you check the bundle size? | Nikhil: Already checked. The animation library is adding around three hundred kilobytes. | Speaker 3: Nikhil, bundle analysis. | Nikhil: Already doing it.",
+            "correction_instruction": "Add action item: 'Check bundle size / perform bundle analysis' with owner Nikhil. Status Pending."
+          }
+        ],
+        "missing_information": [
+          {
+            "field": "",
+            "information": "",
+            "transcript_evidence": "Speaker 3: Nikhil, can you check the bundle size? | Speaker 3: Nikhil, bundle analysis. | Nikhil: Already doing it."
+          },
+          {
+            "field": "",
+            "information": "",
+            "transcript_evidence": "Speaker 4: Can we lazy load it? | Speaker 1: Yes. | Speaker 3: Don't just lazy load everything though. | Speaker 3: Because then the animation appears late and looks broken. | Speaker 2: Maybe load it when it gets close to the viewport. | Speaker 1: That's what I was thinking."
+          },
+          {
+            "field": "",
+            "information": "",
+            "transcript_evidence": "Speaker 3: Rohan, final review. | Rohan: Correct."
+          }
+        ],
+        "improvement_summary": "Minutes are largely accurate on numbers, causes, and key decisions, but omit the explicit Nikhil bundle analysis action item and the substantive lazy-load viewport discussion. Add the missing Nikhil (and Rohan final review) action items and expand the Animations discussion to include the agreed viewport-based lazy loading approach to achieve full completeness."
+      }
+    },
+    {
+      "filename": "transcript_05.txt",
+      "file_type": "transcript",
+      "difficulty": "Medium",
+      "duration": 62265663300,
+      "duration_seconds": 62.2656633,
+      "audit_score": 100,
+      "attendees_count": 7,
+      "attendees": [
+        "Aarav",
+        "Rohan",
+        "Meera",
+        "Ishita",
+        "Dev",
+        "Nikhil",
+        "Kabir"
+      ],
+      "action_items_count": 9,
+      "decisions_count": 2,
+      "discussions_count": 4,
+      "issues_count": 2,
+      "errors_count": 0,
+      "status": "PASS",
+      "audit_report": {
+        "score": 100,
+        "score_breakdown": {
+          "grounding_and_accuracy": 50,
+          "completeness": 30,
+          "attribution": 20,
+          "total_score": 100
+        },
+        "verified": true,
+        "what_is_right": [
+          {
+            "field": "",
+            "claim": "",
+            "transcript_evidence": "Aarav: The client moved the presentation to Thursday morning. | Aarav: We were supposed to present at four in the afternoon. | Dev: Now it's ten thirty."
+          },
+          {
+            "field": "",
+            "claim": "",
+            "transcript_evidence": "Rohan: The results slide and the pricing comparison."
+          },
+          {
+            "field": "",
+            "claim": "",
+            "transcript_evidence": "Meera: I am, but I don't have the latest numbers. | Meera: Please send the actual spreadsheet, not screenshots. | Nikhil: I'll send them to you."
+          },
+          {
+            "field": "",
+            "claim": "",
+            "transcript_evidence": "Ishita: Three are approved and one is waiting. | Ishita: The quote from the enterprise customer. | Rohan: Use the other three and make the layout cleaner."
+          },
+          {
+            "field": "",
+            "claim": "",
+            "transcript_evidence": "Meera: What time should we rehearse? | Aarav: Eight thirty. | Aarav: The presentation is at ten thirty."
+          },
+          {
+            "field": "",
+            "claim": "",
+            "transcript_evidence": "Nikhil: I'll send them to you."
+          },
+          {
+            "field": "",
+            "claim": "",
+            "transcript_evidence": "Rohan: Dev, can you check the formatting on the comparison table? | Rohan: Don't change the layout though. | Dev: I won't."
+          },
+          {
+            "field": "",
+            "claim": "",
+            "transcript_evidence": "Rohan: Nikhil, can you verify the numbers before Meera puts them in the deck? | Rohan: Especially the retention number. | Rohan: Because I think the calculation changed after the database update. | Nikhil: I'll check it against the previous report."
+          },
+          {
+            "field": "",
+            "claim": "",
+            "transcript_evidence": "Rohan: Kabir, can you join the call tomorrow for the technical questions? | Kabir: Sure, but I'm not presenting."
+          },
+          {
+            "field": "",
+            "claim": "",
+            "transcript_evidence": "Meera: Anyway, I'll have the final numbers by seven. | Dev: I'll finish the pricing slide by eight. | Ishita: I'll review the quotes tonight."
+          },
+          {
+            "field": "",
+            "claim": "",
+            "transcript_evidence": "Aarav: And someone please check the video before the meeting because the last version had no audio. | Rohan: I'll check it."
+          },
+          {
+            "field": "",
+            "claim": "",
+            "transcript_evidence": "Aarav: The client moved the presentation to Thursday morning. | Rohan: Thursday morning? | Meera: That's earlier than we expected. | Ishita: How much earlier? | Dev: Now it's ten thirty. | Nikhil: That's a big difference. | Kabir: Sure, but I'm not presenting."
+          }
+        ],
+        "what_is_wrong": [],
+        "missing_information": [],
+        "improvement_summary": "The generated minutes are fully grounded in the transcript with no hallucinations, contradictions, or attribution errors. All explicit decisions, action items with correct owners, and major discussion topics are captured accurately. No corrections are required; optional enhancement could add verbatim details like checking retention number against previous report, but completeness is already satisfied."
+      }
+    },
+    {
+      "filename": "transcript_06.txt",
+      "file_type": "transcript",
+      "difficulty": "Medium",
+      "duration": 47598763500,
+      "duration_seconds": 47.5987635,
+      "audit_score": 100,
+      "attendees_count": 12,
+      "attendees": [
+        "Aarav",
+        "Dev",
+        "Ishita",
+        "Kabir",
+        "Meera",
+        "Nikhil",
+        "Rohan",
+        "Speaker 1",
+        "Speaker 2",
+        "Speaker 3",
+        "Speaker 4",
+        "Speaker 5"
+      ],
+      "action_items_count": 6,
+      "decisions_count": 3,
+      "discussions_count": 6,
+      "issues_count": 3,
+      "errors_count": 0,
+      "status": "PASS",
+      "audit_report": {
+        "score": 100,
+        "score_breakdown": {
+          "grounding_and_accuracy": 50,
+          "completeness": 30,
+          "attribution": 20,
+          "total_score": 100
+        },
+        "verified": true,
+        "what_is_right": [
+          {
+            "field": "discussion_points[0].discussion",
+            "claim": "",
+            "transcript_evidence": "I ran twenty queries yesterday and four returned nothing even though the data existed."
+          },
+          {
+            "field": "discussion_points[0].discussion",
+            "claim": "",
+            "transcript_evidence": "Because we were trying to keep the first release simple."
+          },
+          {
+            "field": "discussion_points[1].discussion",
+            "claim": "",
+            "transcript_evidence": "Mostly company names and invoice numbers."
+          },
+          {
+            "field": "discussion_points[1].discussion",
+            "claim": "",
+            "transcript_evidence": "Okay, maybe only enable it for company names."
+          },
+          {
+            "field": "discussion_points[2].discussion",
+            "claim": "",
+            "transcript_evidence": "No results found."
+          },
+          {
+            "field": "discussion_points[2].discussion",
+            "claim": "",
+            "transcript_evidence": "Something like search by company name, invoice number, or customer email."
+          },
+          {
+            "field": "discussion_points[3].discussion",
+            "claim": "",
+            "transcript_evidence": "It takes up almost the whole screen."
+          },
+          {
+            "field": "discussion_points[3].discussion",
+            "claim": "",
+            "transcript_evidence": "The close button overlaps it."
+          },
+          {
+            "field": "decisions[0]",
+            "claim": "",
+            "transcript_evidence": "I can implement that."
+          },
+          {
+            "field": "action_items[1].owner",
+            "claim": "",
+            "transcript_evidence": "Dev, can you change that?"
+          },
+          {
+            "field": "action_items[2].owner",
+            "claim": "",
+            "transcript_evidence": "I'll fix that."
+          },
+          {
+            "field": "action_items[3].owner",
+            "claim": "",
+            "transcript_evidence": "Enter should submit the search."
+          },
+          {
+            "field": "action_items[3].owner",
+            "claim": "",
+            "transcript_evidence": "I'll add that."
+          },
+          {
+            "field": "action_items[4].owner",
+            "claim": "",
+            "transcript_evidence": "I'll message them now."
+          },
+          {
+            "field": "action_items[5].owner",
+            "claim": "",
+            "transcript_evidence": "Kabir handles analytics too."
+          },
+          {
+            "field": "decisions[2]",
+            "claim": "",
+            "transcript_evidence": "If everyone finishes today, yes."
+          }
+        ],
+        "what_is_wrong": [],
+        "missing_information": [],
+        "improvement_summary": "The generated minutes are fully grounded in the transcript with no hallucinations, contradictions, or attribution errors. All explicit decisions and action items are correctly captured with proper owners, and all major discussion topics are covered. No corrections are required; the minutes meet the verification threshold."
+      }
+    },
+    {
+      "filename": "transcript_07.txt",
+      "file_type": "transcript",
+      "difficulty": "Medium",
+      "duration": 15056314600,
+      "duration_seconds": 15.0563146,
+      "audit_score": 0,
+      "attendees_count": 6,
+      "attendees": [
+        "Rohan",
+        "Meera",
+        "Ishita",
+        "Nikhil",
+        "Dev",
+        "Kabir"
+      ],
+      "action_items_count": 9,
+      "decisions_count": 6,
+      "discussions_count": 2,
+      "issues_count": 2,
+      "errors_count": 0,
+      "status": "WARN",
+      "error_message": "Audit warning: Fable audit failed: fable API status 402: {\"error\":{\"message\":\"Insufficient balance. Please top up your account or upgrade your plan.\",\"type\":\"insufficient_funds\",\"code\":\"insufficient_quota\",\"param\":null}}"
+    },
+    {
+      "filename": "transcript_08.txt",
+      "file_type": "transcript",
+      "difficulty": "Medium",
+      "duration": 14747162300,
+      "duration_seconds": 14.7471623,
+      "audit_score": 0,
+      "attendees_count": 7,
+      "attendees": [
+        "Meera",
+        "Rohan",
+        "Dev",
+        "Ishita",
+        "Kabir",
+        "Nikhil",
+        "Aarav"
+      ],
+      "action_items_count": 9,
+      "decisions_count": 3,
+      "discussions_count": 3,
+      "issues_count": 3,
+      "errors_count": 0,
+      "status": "WARN",
+      "error_message": "Audit warning: Fable audit failed: fable API status 402: {\"error\":{\"message\":\"Insufficient balance. Please top up your account or upgrade your plan.\",\"type\":\"insufficient_funds\",\"code\":\"insufficient_quota\",\"param\":null}}"
+    },
+    {
+      "filename": "transcript_09.txt",
+      "file_type": "transcript",
+      "difficulty": "Easy",
+      "duration": 14800717800,
+      "duration_seconds": 14.8007178,
+      "audit_score": 0,
+      "attendees_count": 6,
+      "attendees": [
+        "Meera",
+        "Dev",
+        "Rohan",
+        "Nikhil",
+        "Kabir",
+        "Ishita"
+      ],
+      "action_items_count": 5,
+      "decisions_count": 4,
+      "discussions_count": 5,
+      "issues_count": 0,
+      "errors_count": 0,
+      "status": "WARN",
+      "error_message": "Audit warning: Fable audit failed: fable API status 402: {\"error\":{\"message\":\"Insufficient balance. Please top up your account or upgrade your plan.\",\"type\":\"insufficient_funds\",\"code\":\"insufficient_quota\",\"param\":null}}"
+    },
+    {
+      "filename": "transcript_10.txt",
+      "file_type": "transcript",
+      "difficulty": "Medium",
+      "duration": 14865513800,
+      "duration_seconds": 14.8655138,
+      "audit_score": 0,
+      "attendees_count": 10,
+      "attendees": [
+        "Speaker 1",
+        "Speaker 2",
+        "Speaker 3",
+        "Nikhil",
+        "Speaker 4",
+        "Rohan",
+        "Dev",
+        "Meera",
+        "Ishita",
+        "Kabir"
+      ],
+      "action_items_count": 11,
+      "decisions_count": 2,
+      "discussions_count": 2,
+      "issues_count": 1,
+      "errors_count": 0,
+      "status": "WARN",
+      "error_message": "Audit warning: Fable audit failed: fable API status 402: {\"error\":{\"message\":\"Insufficient balance. Please top up your account or upgrade your plan.\",\"type\":\"insufficient_funds\",\"code\":\"insufficient_quota\",\"param\":null}}"
+    },
+    {
+      "filename": "transcript_11.txt",
+      "file_type": "transcript",
+      "difficulty": "Easy",
+      "duration": 14144087800,
+      "duration_seconds": 14.1440878,
+      "audit_score": 0,
+      "attendees_count": 7,
+      "attendees": [
+        "Aarav",
+        "Nikhil",
+        "Meera",
+        "Rohan",
+        "Dev",
+        "Kabir",
+        "Ishita"
+      ],
+      "action_items_count": 3,
+      "decisions_count": 3,
+      "discussions_count": 4,
+      "issues_count": 2,
+      "errors_count": 0,
+      "status": "WARN",
+      "error_message": "Audit warning: Fable audit failed: fable API status 402: {\"error\":{\"message\":\"Insufficient balance. Please top up your account or upgrade your plan.\",\"type\":\"insufficient_funds\",\"code\":\"insufficient_quota\",\"param\":null}}"
+    }
+  ]
+}

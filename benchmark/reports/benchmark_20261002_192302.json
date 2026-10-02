@@ -1,0 +1,281 @@
+{
+  "total_files": 10,
+  "passed_files": 0,
+  "warn_files": 10,
+  "failed_files": 0,
+  "pass_rate": 0,
+  "average_score": 0,
+  "average_latency_sec": 9.36566406,
+  "total_duration_sec": 17.8563722,
+  "tiers": {
+    "Easy": {
+      "tier": "Easy",
+      "total_files": 0,
+      "passed_files": 0,
+      "warn_files": 0,
+      "failed_files": 0,
+      "pass_rate": 0,
+      "average_score": 0,
+      "average_latency_sec": 0,
+      "total_attendees": 0,
+      "total_action_items": 0,
+      "total_decisions": 0,
+      "total_discussions": 0,
+      "total_errors": 0
+    },
+    "Hard": {
+      "tier": "Hard",
+      "total_files": 10,
+      "passed_files": 0,
+      "warn_files": 10,
+      "failed_files": 0,
+      "pass_rate": 0,
+      "average_score": 0,
+      "average_latency_sec": 9.36566406,
+      "total_attendees": 39,
+      "total_action_items": 30,
+      "total_decisions": 17,
+      "total_discussions": 29,
+      "total_errors": 0
+    },
+    "Medium": {
+      "tier": "Medium",
+      "total_files": 0,
+      "passed_files": 0,
+      "warn_files": 0,
+      "failed_files": 0,
+      "pass_rate": 0,
+      "average_score": 0,
+      "average_latency_sec": 0,
+      "total_attendees": 0,
+      "total_action_items": 0,
+      "total_decisions": 0,
+      "total_discussions": 0,
+      "total_errors": 0
+    }
+  },
+  "analysis_notes": [
+    "Evaluated 10 files across active difficulty tiers with an overall average score of 0.0%."
+  ],
+  "results": [
+    {
+      "filename": "hard_01_product_strategy.txt",
+      "file_type": "transcript",
+      "difficulty": "Hard",
+      "duration": 7553611200,
+      "duration_seconds": 7.5536112,
+      "audit_score": 0,
+      "attendees_count": 4,
+      "attendees": [
+        "Marcus",
+        "Maya",
+        "David",
+        "Anna"
+      ],
+      "action_items_count": 3,
+      "decisions_count": 1,
+      "discussions_count": 2,
+      "issues_count": 2,
+      "errors_count": 0,
+      "status": "WARN",
+      "error_message": "Audit warning: Fable audit failed: fable API status 402: {\"error\":{\"message\":\"Insufficient balance. Please top up your account or upgrade your plan.\",\"type\":\"insufficient_funds\",\"code\":\"insufficient_quota\",\"param\":null}}"
+    },
+    {
+      "filename": "hard_02_quarterly_review.txt",
+      "file_type": "transcript",
+      "difficulty": "Hard",
+      "duration": 7211129900,
+      "duration_seconds": 7.2111299,
+      "audit_score": 0,
+      "attendees_count": 4,
+      "attendees": [
+        "Sarah",
+        "James",
+        "Priya",
+        "Daniel"
+      ],
+      "action_items_count": 2,
+      "decisions_count": 2,
+      "discussions_count": 2,
+      "issues_count": 4,
+      "errors_count": 0,
+      "status": "WARN",
+      "error_message": "Audit warning: Fable audit failed: fable API status 402: {\"error\":{\"message\":\"Insufficient balance. Please top up your account or upgrade your plan.\",\"type\":\"insufficient_funds\",\"code\":\"insufficient_quota\",\"param\":null}}"
+    },
+    {
+      "filename": "hard_03_sales_pipeline.txt",
+      "file_type": "transcript",
+      "difficulty": "Hard",
+      "duration": 7645205200,
+      "duration_seconds": 7.6452052,
+      "audit_score": 0,
+      "attendees_count": 4,
+      "attendees": [
+        "David",
+        "Marcus",
+        "Anna",
+        "Maya"
+      ],
+      "action_items_count": 4,
+      "decisions_count": 1,
+      "discussions_count": 3,
+      "issues_count": 2,
+      "errors_count": 0,
+      "status": "WARN",
+      "error_message": "Audit warning: Fable audit failed: fable API status 402: {\"error\":{\"message\":\"Insufficient balance. Please top up your account or upgrade your plan.\",\"type\":\"insufficient_funds\",\"code\":\"insufficient_quota\",\"param\":null}}"
+    },
+    {
+      "filename": "hard_04_customer_incident.txt",
+      "file_type": "transcript",
+      "difficulty": "Hard",
+      "duration": 12236901600,
+      "duration_seconds": 12.2369016,
+      "audit_score": 0,
+      "attendees_count": 4,
+      "attendees": [
+        "Anna",
+        "Tom",
+        "Leah",
+        "Raj"
+      ],
+      "action_items_count": 3,
+      "decisions_count": 2,
+      "discussions_count": 3,
+      "issues_count": 0,
+      "errors_count": 0,
+      "status": "WARN",
+      "error_message": "Audit warning: Fable audit failed: fable API status 429: error code: 1015\n"
+    },
+    {
+      "filename": "hard_05_budget_planning.txt",
+      "file_type": "transcript",
+      "difficulty": "Hard",
+      "duration": 11424078500,
+      "duration_seconds": 11.4240785,
+      "audit_score": 0,
+      "attendees_count": 4,
+      "attendees": [
+        "Maya",
+        "James",
+        "Priya",
+        "Daniel"
+      ],
+      "action_items_count": 1,
+      "decisions_count": 1,
+      "discussions_count": 3,
+      "issues_count": 2,
+      "errors_count": 0,
+      "status": "WARN",
+      "error_message": "Audit warning: Fable audit failed: fable API status 429: error code: 1015\n"
+    },
+    {
+      "filename": "hard_06_operations_meeting.txt",
+      "file_type": "transcript",
+      "difficulty": "Hard",
+      "duration": 7607575800,
+      "duration_seconds": 7.6075758,
+      "audit_score": 0,
+      "attendees_count": 4,
+      "attendees": [
+        "Marcus",
+        "Elena",
+        "Robert",
+        "Nina"
+      ],
+      "action_items_count": 3,
+      "decisions_count": 2,
+      "discussions_count": 2,
+      "issues_count": 3,
+      "errors_count": 0,
+      "status": "WARN",
+      "error_message": "Audit warning: Fable audit failed: fable API status 402: {\"error\":{\"message\":\"Insufficient balance. Please top up your account or upgrade your plan.\",\"type\":\"insufficient_funds\",\"code\":\"insufficient_quota\",\"param\":null}}"
+    },
+    {
+      "filename": "hard_07_marketing_review.txt",
+      "file_type": "transcript",
+      "difficulty": "Hard",
+      "duration": 8189387800,
+      "duration_seconds": 8.1893878,
+      "audit_score": 0,
+      "attendees_count": 3,
+      "attendees": [
+        "Lena",
+        "Chris",
+        "Mark"
+      ],
+      "action_items_count": 2,
+      "decisions_count": 2,
+      "discussions_count": 4,
+      "issues_count": 3,
+      "errors_count": 0,
+      "status": "WARN",
+      "error_message": "Audit warning: Fable audit failed: fable API status 402: {\"error\":{\"message\":\"Insufficient balance. Please top up your account or upgrade your plan.\",\"type\":\"insufficient_funds\",\"code\":\"insufficient_quota\",\"param\":null}}"
+    },
+    {
+      "filename": "hard_08_executive_strategy.txt",
+      "file_type": "transcript",
+      "difficulty": "Hard",
+      "duration": 11434758400,
+      "duration_seconds": 11.4347584,
+      "audit_score": 0,
+      "attendees_count": 4,
+      "attendees": [
+        "Marcus",
+        "Maya",
+        "David",
+        "Anna"
+      ],
+      "action_items_count": 3,
+      "decisions_count": 1,
+      "discussions_count": 3,
+      "issues_count": 3,
+      "errors_count": 0,
+      "status": "WARN",
+      "error_message": "Audit warning: Fable audit failed: fable API status 429: error code: 1015\n"
+    },
+    {
+      "filename": "hard_09_product_incident_review.txt",
+      "file_type": "transcript",
+      "difficulty": "Hard",
+      "duration": 10052509000,
+      "duration_seconds": 10.052509,
+      "audit_score": 0,
+      "attendees_count": 3,
+      "attendees": [
+        "Nora",
+        "Victor",
+        "Sam"
+      ],
+      "action_items_count": 3,
+      "decisions_count": 1,
+      "discussions_count": 3,
+      "issues_count": 1,
+      "errors_count": 0,
+      "status": "WARN",
+      "error_message": "Audit warning: Fable audit failed: fable API status 429: error code: 1015\n"
+    },
+    {
+      "filename": "hard_10_board_preparation.txt",
+      "file_type": "transcript",
+      "difficulty": "Hard",
+      "duration": 10301483200,
+      "duration_seconds": 10.3014832,
+      "audit_score": 0,
+      "attendees_count": 5,
+      "attendees": [
+        "Maya",
+        "Marcus",
+        "James",
+        "Anna",
+        "David"
+      ],
+      "action_items_count": 6,
+      "decisions_count": 4,
+      "discussions_count": 4,
+      "issues_count": 0,
+      "errors_count": 0,
+      "status": "WARN",
+      "error_message": "Audit warning: Fable audit failed: fable API status 429: error code: 1015\n"
+    }
+  ]
+}

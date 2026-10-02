@@ -1,0 +1,16 @@
+Filename,Type,Difficulty,Status,Audit Score,Latency (s),Attendees Count,Attendees,Action Items,Decisions,Discussions,Errors Count,Error Message
+hard_01_product_strategy.txt,transcript,Hard,WARN,0.0,7.55,4,Marcus; Maya; David; Anna,3,1,2,0,"Audit warning: Fable audit failed: fable API status 402: {""error"":{""message"":""Insufficient balance. Please top up your account or upgrade your plan."",""type"":""insufficient_funds"",""code"":""insufficient_quota"",""param"":null}}"
+hard_02_quarterly_review.txt,transcript,Hard,WARN,0.0,7.21,4,Sarah; James; Priya; Daniel,2,2,2,0,"Audit warning: Fable audit failed: fable API status 402: {""error"":{""message"":""Insufficient balance. Please top up your account or upgrade your plan."",""type"":""insufficient_funds"",""code"":""insufficient_quota"",""param"":null}}"
+hard_03_sales_pipeline.txt,transcript,Hard,WARN,0.0,7.65,4,David; Marcus; Anna; Maya,4,1,3,0,"Audit warning: Fable audit failed: fable API status 402: {""error"":{""message"":""Insufficient balance. Please top up your account or upgrade your plan."",""type"":""insufficient_funds"",""code"":""insufficient_quota"",""param"":null}}"
+hard_04_customer_incident.txt,transcript,Hard,WARN,0.0,12.24,4,Anna; Tom; Leah; Raj,3,2,3,0,"Audit warning: Fable audit failed: fable API status 429: error code: 1015
+"
+hard_05_budget_planning.txt,transcript,Hard,WARN,0.0,11.42,4,Maya; James; Priya; Daniel,1,1,3,0,"Audit warning: Fable audit failed: fable API status 429: error code: 1015
+"
+hard_06_operations_meeting.txt,transcript,Hard,WARN,0.0,7.61,4,Marcus; Elena; Robert; Nina,3,2,2,0,"Audit warning: Fable audit failed: fable API status 402: {""error"":{""message"":""Insufficient balance. Please top up your account or upgrade your plan."",""type"":""insufficient_funds"",""code"":""insufficient_quota"",""param"":null}}"
+hard_07_marketing_review.txt,transcript,Hard,WARN,0.0,8.19,3,Lena; Chris; Mark,2,2,4,0,"Audit warning: Fable audit failed: fable API status 402: {""error"":{""message"":""Insufficient balance. Please top up your account or upgrade your plan."",""type"":""insufficient_funds"",""code"":""insufficient_quota"",""param"":null}}"
+hard_08_executive_strategy.txt,transcript,Hard,WARN,0.0,11.43,4,Marcus; Maya; David; Anna,3,1,3,0,"Audit warning: Fable audit failed: fable API status 429: error code: 1015
+"
+hard_09_product_incident_review.txt,transcript,Hard,WARN,0.0,10.05,3,Nora; Victor; Sam,3,1,3,0,"Audit warning: Fable audit failed: fable API status 429: error code: 1015
+"
+hard_10_board_preparation.txt,transcript,Hard,WARN,0.0,10.30,5,Maya; Marcus; James; Anna; David,6,4,4,0,"Audit warning: Fable audit failed: fable API status 429: error code: 1015
+"

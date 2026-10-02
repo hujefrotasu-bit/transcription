@@ -1,0 +1,55 @@
+{
+  "total_files": 2,
+  "passed_files": 2,
+  "warn_files": 0,
+  "failed_files": 0,
+  "pass_rate": 100,
+  "average_score": 100,
+  "average_latency_sec": 20.30678055,
+  "total_duration_sec": 29.7669313,
+  "results": [
+    {
+      "filename": "onboarding_meeting.txt",
+      "file_type": "transcript",
+      "duration": 29766330700,
+      "duration_seconds": 29.7663307,
+      "audit_score": 100,
+      "attendees_count": 7,
+      "attendees": [
+        "Aarav",
+        "Meera",
+        "Rohan",
+        "Dev",
+        "Nikhil",
+        "Ishita",
+        "Kabir"
+      ],
+      "action_items_count": 9,
+      "decisions_count": 2,
+      "discussions_count": 7,
+      "issues_count": 4,
+      "errors_count": 0,
+      "status": "PASS"
+    },
+    {
+      "filename": "quarterly_operations_review.txt",
+      "file_type": "transcript",
+      "duration": 10847230400,
+      "duration_seconds": 10.8472304,
+      "audit_score": 100,
+      "attendees_count": 4,
+      "attendees": [
+        "Marcus",
+        "Maya",
+        "David",
+        "Anna"
+      ],
+      "action_items_count": 3,
+      "decisions_count": 2,
+      "discussions_count": 3,
+      "issues_count": 2,
+      "errors_count": 0,
+      "status": "PASS"
+    }
+  ]
+}

@@ -7,6 +7,7 @@ import (
 
 	"github.com/joho/godotenv"
 
+	"transcript/benchmark"
 	"transcript/database"
 	"transcript/routes"
 	"transcript/transcription"
@@ -58,8 +59,11 @@ func main() {
 		Verifier:             verifier,
 	}
 
-	// 5. Initialise HTTP API routes using dedicated ServeMux.
-	router := routes.NewRouter(conversationHandler, verifHandler)
+	// 5. Wire up bulk benchmarking handler.
+	benchHandler := benchmark.NewHandler(audioSvc, momSvc, verifier)
+
+	// 6. Initialise HTTP API routes using dedicated ServeMux.
+	router := routes.NewRouter(conversationHandler, verifHandler, benchHandler)
 
 	log.Println("Server running on http://localhost:8080")
 	if err = http.ListenAndServe(":8080", router); err != nil {

@@ -1,0 +1,123 @@
+{
+  "total_files": 4,
+  "passed_files": 3,
+  "warn_files": 0,
+  "failed_files": 1,
+  "pass_rate": 75.0,
+  "average_score": 91.75,
+  "average_latency_sec": 70.55,
+  "total_duration_sec": 117.48,
+  "tiers": {
+    "Easy": {
+      "tier": "Easy",
+      "total_files": 2,
+      "passed_files": 2,
+      "warn_files": 0,
+      "failed_files": 0,
+      "pass_rate": 100.0,
+      "average_score": 100.0,
+      "average_latency_sec": 54.50,
+      "total_attendees": 2,
+      "total_actions": 1,
+      "total_decisions": 1,
+      "total_discussions": 2,
+      "total_errors": 0
+    },
+    "Medium": {
+      "tier": "Medium",
+      "total_files": 1,
+      "passed_files": 1,
+      "warn_files": 0,
+      "failed_files": 0,
+      "pass_rate": 100.0,
+      "average_score": 100.0,
+      "average_latency_sec": 55.73,
+      "total_attendees": 4,
+      "total_actions": 1,
+      "total_decisions": 1,
+      "total_discussions": 2,
+      "total_errors": 0
+    },
+    "Hard": {
+      "tier": "Hard",
+      "total_files": 1,
+      "passed_files": 0,
+      "warn_files": 0,
+      "failed_files": 1,
+      "pass_rate": 0.0,
+      "average_score": 67.0,
+      "average_latency_sec": 117.48,
+      "total_attendees": 5,
+      "total_actions": 3,
+      "total_decisions": 4,
+      "total_discussions": 4,
+      "total_errors": 2
+    }
+  },
+  "analysis_notes": [
+    "⚠️ Complexity Sensitivity: The LLM excels on Easy transcripts (100.0%) but drops significantly on Hard multi-speaker transcripts (67.0%, -33.0%). Consider improving speaker diarization or cross-talk segmentation.",
+    "⏱️ Latency Scaling: Processing Hard meetings takes 117.5s on average vs 54.5s on Easy meetings (2.2x multiplier)."
+  ],
+  "results": [
+    {
+      "filename": "Effective Meetings Simulated Exercise for Chairing & Minute Taking.mp3",
+      "file_type": "audio",
+      "difficulty": "Hard",
+      "status": "FAIL",
+      "audit_score": 67.0,
+      "duration_seconds": 117.48,
+      "attendees_count": 5,
+      "attendees": ["Rita", "Lucy Stokes", "David", "Marcus", "Anna"],
+      "action_items_count": 3,
+      "decisions_count": 4,
+      "discussions_count": 4,
+      "errors_count": 2,
+      "error_message": "Complexity degradation: Multi-speaker rapid debate with absent attendee confusion"
+    },
+    {
+      "filename": "audio1.ogg",
+      "file_type": "audio",
+      "difficulty": "Easy",
+      "status": "PASS",
+      "audit_score": 100.0,
+      "duration_seconds": 53.89,
+      "attendees_count": 1,
+      "attendees": ["Sarah"],
+      "action_items_count": 1,
+      "decisions_count": 1,
+      "discussions_count": 1,
+      "errors_count": 0,
+      "error_message": ""
+    },
+    {
+      "filename": "business.mp3",
+      "file_type": "audio",
+      "difficulty": "Medium",
+      "status": "PASS",
+      "audit_score": 100.0,
+      "duration_seconds": 55.73,
+      "attendees_count": 4,
+      "attendees": ["Marcus", "Maya", "David", "Anna"],
+      "action_items_count": 1,
+      "decisions_count": 1,
+      "discussions_count": 2,
+      "errors_count": 0,
+      "error_message": ""
+    },
+    {
+      "filename": "meeting-clip1.mp3",
+      "file_type": "audio",
+      "difficulty": "Easy",
+      "status": "PASS",
+      "audit_score": 100.0,
+      "duration_seconds": 55.12,
+      "attendees_count": 1,
+      "attendees": ["Paul"],
+      "action_items_count": 0,
+      "decisions_count": 0,
+      "discussions_count": 1,
+      "errors_count": 0,
+      "error_message": ""
+    }
+  ]
+}

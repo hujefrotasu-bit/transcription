@@ -259,11 +259,15 @@ Every extracted attendee, agenda topic, discussion point, decision, action item,
 Accuracy is more important than completeness. When uncertain, prefer omission or null over guessing.
 
 ==================================================
-2. ATTENDEES, LATE ARRIVALS & ABSENCES
+2. ATTENDEES (STRICT PRESENCE RULE: ONLY ACTIVE CONVERSATION PARTICIPANTS)
 ==================================================
-* ATTENDEES: Include ONLY individuals who were physically or virtually present and spoke or were actively introduced.
-* LATE ARRIVALS: If someone was initially announced as running late (or had sent apologies) but subsequently arrived during the meeting and spoke, they ARE an attendee and MUST be included in "attendees" (designation may note their role or "Arrived late").
-* ABSENCES & APOLOGIES: Anyone absent, off sick, or who sent apologies MUST be STRICTLY EXCLUDED from "attendees". Document their absences and stated reasons in "discussion_points" under a topic "Apologies for Absence & Introductions".
+* CRITICAL ATTENDEE RULE: Include in "attendees" ONLY individuals who were ACTUALLY PRESENT in the conversation and actively participated / spoke in the dialogue.
+* NON-ATTENDEES MUST BE STRICTLY EXCLUDED:
+  - If someone is NOT in the conversation, THEY MUST NOT BE IN "attendees".
+  - Merely mentioning a person's name does NOT make them an attendee (e.g. "ask Clive", "check with Sarah in finance", "our contact at Acme", "the client said", "we need an external researcher"). If they did not actively participate in the conversation, DO NOT add them to "attendees".
+  - Anyone absent, off sick, on leave, working remotely without attending, or who sent apologies MUST BE STRICTLY EXCLUDED from "attendees". (Record absences in "discussion_points", NEVER in "attendees").
+  - Do NOT list "Narrator", generic groups ("All Staff"), or third-party companies as attendees.
+* LATE ARRIVALS: Only if someone actually arrives during the meeting and actively speaks in the dialogue are they an attendee. If they never arrived or never spoke, they are NOT an attendee.
 
 ==================================================
 3. AGENDA TOPICS
@@ -536,6 +540,8 @@ TRANSCRIPT
 	// Ensure slice fields are non-nil for JSON array serialization consistency
 	if mom.Attendees == nil {
 		mom.Attendees = []Attendee{}
+	} else {
+		mom.Attendees = filterValidAttendees(mom.Attendees, trimmedTranscript)
 	}
 	if mom.Agenda == nil {
 		mom.Agenda = []string{}
@@ -554,11 +560,6 @@ TRANSCRIPT
 	}
 
 	finalTranscript := trimmedTranscript
-	trimmedNamed := strings.TrimSpace(result.NamedTranscript)
-	// Only accept namedTranscript if it's substantial dialogue (not just a title or short summary)
-	if len(trimmedNamed) >= len(trimmedTranscript)/2 && len(trimmedNamed) > 80 {
-		finalTranscript = trimmedNamed
-	}
 
 	// Calculate token usage and estimated costs in INR & USD
 	usage := &TokenUsage{
@@ -617,8 +618,63 @@ TRANSCRIPT
 
 	usage.EstimatedCostUSD = (float64(usage.InputTokens)*inputRateUSD + float64(usage.OutputTokens)*outputRateUSD) / 1000000.0
 	usage.EstimatedCostINR = usage.EstimatedCostUSD * 88.0
-
 	return mom, finalTranscript, usage, nil
+}
+
+// filterValidAttendees ensures only people who were actually present and participating
+// in the conversation are included in attendees. People mentioned in passing, absent, or
+// who sent apologies are strictly excluded.
+func filterValidAttendees(attendees []Attendee, transcript string) []Attendee {
+	if len(attendees) == 0 {
+		return attendees
+	}
+
+	lowerTranscript := strings.ToLower(transcript)
+	var valid []Attendee
+
+	for _, att := range attendees {
+		name := strings.TrimSpace(att.Name)
+		if name == "" {
+			continue
+		}
+		lowerName := strings.ToLower(name)
+
+		// Exclude generic non-person roles or labels
+		if lowerName == "narrator" || lowerName == "all" || lowerName == "all attendees" || lowerName == "all staff" || lowerName == "everyone" {
+			continue
+		}
+
+		// Check if explicitly noted as absent, sick, or apologies without participating
+		isAbsent := strings.Contains(lowerTranscript, lowerName+" is absent") ||
+			strings.Contains(lowerTranscript, lowerName+" was absent") ||
+			strings.Contains(lowerTranscript, lowerName+" is off sick") ||
+			strings.Contains(lowerTranscript, lowerName+" was off sick") ||
+			strings.Contains(lowerTranscript, lowerName+" has flu") ||
+			strings.Contains(lowerTranscript, "apologies from "+lowerName) ||
+			strings.Contains(lowerTranscript, "apologies for "+lowerName) ||
+			strings.Contains(lowerTranscript, lowerName+" sent apologies") ||
+			strings.Contains(lowerTranscript, lowerName+" sends apologies") ||
+			strings.Contains(lowerTranscript, lowerName+" couldn't make it") ||
+			strings.Contains(lowerTranscript, lowerName+" couldn't join") ||
+			strings.Contains(lowerTranscript, lowerName+" is unavailable") ||
+			strings.Contains(lowerTranscript, lowerName+" on leave")
+
+		// If explicitly absent and never spoke in dialogue, exclude
+		if isAbsent && !strings.Contains(transcript, name+":") {
+			log.Printf("filterValidAttendees: excluding %s (marked absent and did not speak in conversation)", name)
+			continue
+		}
+
+		// If the person is not in the transcript at all, exclude
+		if !strings.Contains(lowerTranscript, lowerName) {
+			log.Printf("filterValidAttendees: excluding %s (name never appears in transcript)", name)
+			continue
+		}
+
+		valid = append(valid, att)
+	}
+
+	return valid
 }
 
 // SaveMeetingMinutes persists extracted Minutes of Meeting into the meeting_minutes table with the given conversation_id.

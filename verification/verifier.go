@@ -47,7 +47,7 @@ B. Completeness & Recall (Max 30 pts):
    - Deduct 8 pts per omitted explicit action item.
    - Deduct 4 pts per omitted major discussion topic.
 C. Attribution & Consistency (Max 20 pts):
-   - Deduct 5 pts per wrong or unsupported attendee.
+   - Deduct 5 pts per wrong, absent, or unsupported attendee (anyone listed in attendees who was not present or did not speak in the conversation).
    - Deduct 5 pts per wrongly attributed action item owner.
    - Deduct 5 pts per unsupported or wrong deadline.
 

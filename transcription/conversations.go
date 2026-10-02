@@ -126,6 +126,19 @@ func (h *ConversationHandler) CreateConversation(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// Resolve speaker identities based on conversational context, direct address, and discourse flow.
+	// This identifies who is speaking each turn (e.g. "Dev: ...", "Meera: ...", or "Speaker 1: ..." if unnamed)
+	// whether the input has generic tags ("Speaker 1:"), mixed tags, or no tags at all (raw pasted dialogue).
+	if h.TranscriptionService != nil {
+		resolveCtx, cancelResolve := context.WithTimeout(r.Context(), 2*time.Minute)
+		resolved := h.TranscriptionService.ResolveSpeakers(resolveCtx, cleanedTranscript)
+		cancelResolve()
+		if strings.TrimSpace(resolved) != "" && len(resolved) >= len(cleanedTranscript)/2 {
+			log.Printf("CreateConversation: resolved speaker identities (%d -> %d chars)", len(cleanedTranscript), len(resolved))
+			cleanedTranscript = strings.TrimSpace(resolved)
+		}
+	}
+
 	// 1. Check if an existing conversation has matching transcript (exact match, normalized, or speaker-stripped)
 	var id uuid.UUID
 	var isExisting bool

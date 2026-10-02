@@ -20,6 +20,8 @@ import (
 // TranscriptionService is the interface any speech-to-text provider must satisfy.
 type TranscriptionService interface {
 	Transcribe(ctx context.Context, audio io.Reader, filename string) (string, error)
+	ResolveSpeakers(ctx context.Context, rawTranscript string) string
+	Model() string
 }
 
 // ─────────────────────────────────────────────
@@ -54,8 +56,8 @@ func NewGeminiTranscriptionService() (*GeminiTranscriptionService, error) {
 	if nameModel == "" {
 		nameModel = os.Getenv("GEMINI_TOPIC_MODEL")
 	}
-	if nameModel == "" || nameModel == "gemini-3.5-flash-lite" {
-		nameModel = "gemini-3.5-flash"
+	if nameModel == "" {
+		nameModel = "gemini-3.5-flash-lite"
 	}
 
 	return &GeminiTranscriptionService{
@@ -185,7 +187,7 @@ func (s *GeminiTranscriptionService) Transcribe(ctx context.Context, audio io.Re
 	// Step 3: resolve speaker names from introductions and dialogue.
 	// If names are mentioned or speakers are introduced, replace generic "Speaker X:" labels with their actual names.
 	// If names are not mentioned or remain unknown, keep "Speaker X:".
-	namedTranscript := s.resolveSpeakerNames(ctx, transcript)
+	namedTranscript := s.ResolveSpeakers(ctx, transcript)
 	if strings.TrimSpace(namedTranscript) != "" {
 		return strings.TrimSpace(namedTranscript), nil
 	}
@@ -193,40 +195,52 @@ func (s *GeminiTranscriptionService) Transcribe(ctx context.Context, audio io.Re
 	return transcript, nil
 }
 
-// resolveSpeakerNames uses Gemini to analyze meeting dialogue discourse, introductions,
-// and direct address to assign accurate speaker names to every dialogue turn, fixing
-// common acoustic diarization confusion or merged-speaker errors.
-func (s *GeminiTranscriptionService) resolveSpeakerNames(ctx context.Context, rawTranscript string) string {
+// ResolveSpeakers uses Gemini to analyze meeting dialogue discourse, introductions,
+// direct address, questions, answers, and role context to assign accurate speaker names
+// to every dialogue turn. Handles unlabelled raw text, generic "Speaker 1:" tags, and mixed transcripts.
+// If a person's name cannot be confirmed, it assigns consistent speaker identifiers (e.g. "Speaker 1:").
+func (s *GeminiTranscriptionService) ResolveSpeakers(ctx context.Context, rawTranscript string) string {
 	trimmed := strings.TrimSpace(rawTranscript)
 	if trimmed == "" {
 		return rawTranscript
 	}
 
-	prompt := fmt.Sprintf(`You are an expert dialogue speaker-attribution analyzer for meeting transcripts.
-You are given a meeting transcript where acoustic speech diarization produced generic tags (Speaker 1, Speaker 2, etc.) but suffered from speaker confusion and merged speaker errors (for example, assigning a line where the chair thanks David as David himself).
+	prompt := fmt.Sprintf(`You are an expert conversational discourse and speaker-attribution analyzer for meeting transcripts.
 
-YOUR TASK:
-Assign the correct real speaker name to every single turn in the transcript based strictly on conversational logic, introductions, roles, direct address, and discourse flow.
+You are given a meeting transcript. The input might:
+A) Have NO speaker tags at all (just lines or paragraphs of dialogue spoken by different participants),
+B) Contain generic tags (e.g. "Speaker 1:", "Speaker 2:"), OR
+C) Have a mix of tags or partial speaker labels.
 
-ANALYSIS RULES:
-1. IDENTIFY PARTICIPANTS & ROLES FROM DIALOGUE:
-   - Establish who is who: who is chairing the meeting, who is in finance, who is in sales, who is in customer services, or narrator.
-2. CONVERSATIONAL LOGIC & SPEAKER ATTRIBUTION:
-   - A participant NEVER thanks themselves: "Okay, thanks, David" is spoken by the meeting chair to David, NEVER by David.
-   - A participant NEVER delegates a task to themselves in the third person: "Good. David, could you look for a market research company we could work with on this?" is spoken by the chair to David, NEVER by David.
-   - When the chair asks "David, could you look for a market research company...?", the immediate acceptance "Sure." is spoken by DAVID, not another attendee.
-   - Meeting chair interventions (opening the meeting, facilitating turns, thanking speakers, managing time/agenda, transitioning topics) belong to the meeting chair.
-   - Discussions about products, sales offers, and handouts belong to the sales director.
-   - Discussions about customer procedures, cancellations, and accounts belong to customer services.
-   - Discussions about figures, budgets, and external research belong to finance.
-   - An introductory background setup describing the meeting and company belongs to "Narrator:" or the speaker giving the overview.
-3. IMMUTABILITY OF SPOKEN WORDS:
-   - Preserve EVERY SINGLE SPOKEN WORD verbatim. Do not change, omit, correct, or summarize any words.
-   - Only correct the speaker name before the colon.
+YOUR CORE OBJECTIVE:
+Accurately identify WHO is speaking every single line/turn in the transcript and format each turn as:
+"SpeakerName: Utterance..."
 
-OUTPUT FORMAT:
-Output ONLY the transcript with accurate speaker names on each line (e.g. "Marcus: ...", "Maya: ...", "David: ...", "Anna: ...").
-No markdown code fences, no explanations.
+SPEAKER IDENTIFICATION & DEDUCTION RULES:
+1. DIRECT ADDRESS VS SPEAKER (CRITICAL):
+   - When an utterance addresses someone by name (e.g. "[Name], you said yesterday...", "[Name], what do you think?", "Okay, then [Name], you'll need to...", "right, [Name]?"), the SPEAKER of that line is NEVER [Name]. It is someone else speaking to [Name]. A person NEVER addresses themselves in the second person ("you")!
+   - When someone is directly asked a question or assigned a task ("[Name], you said yesterday that..."), the IMMEDIATE NEXT turn answering ("Yeah, that's what I found...") is spoken by [Name].
+   - A participant NEVER thanks themselves: when an utterance says "Thanks, [Name]" or "Thank you, [Name]", the speaker is someone thanking [Name], NEVER [Name].
+   - When someone says "Because the last time I updated it, [Name] changed half the tasks...", the immediate rebuttal "Because half the tasks were wrong." is spoken by [Name] defending their action!
+
+2. FACILITATOR & TASK OWNERSHIP REASONING:
+   - Identify the meeting facilitator/lead (e.g. who opens the meeting, calls on people, keeps track of time to finish before six, summarizes tasks, closes meeting).
+   - Trace functional ownership:
+     * Cross-reference stated responsibilities, task assignments, and domain discussions (e.g. frontend, backend/API, QA/testing, analytics, numbers/dashboard, reviews, scheduling) to attribute speakers consistently.
+
+3. UNKNOWN / UNCONFIRMED SPEAKERS:
+   - If a speaker's specific real name cannot be determined from conversational evidence, assign a consistent speaker label (e.g. "Speaker 1:", "Speaker 2:", etc.) keeping the same speaker label for turns spoken by the same unknown individual.
+   - NEVER invent or hallucinate names of people not mentioned in the dialogue. If unsure of their name, use "Speaker 1:", "Speaker 2:", etc.
+
+4. STRICT VERBATIM PRESERVATION OF WORDS:
+   - You MUST PRESERVE EVERY SINGLE SPOKEN WORD VERBATIM.
+   - Do NOT edit, omit, rephrase, summarize, or alter any spoken text.
+   - Every single turn from the input transcript must be present in the output in the exact same chronological order.
+
+5. OUTPUT FORMAT:
+   - Return ONLY the dialogue formatted with one speaker turn per paragraph (separated by double newlines), formatted as:
+     Speaker: Text
+   - Do NOT include any markdown code blocks (no `+"```"+`), no introductory comments, no explanations.
 
 TRANSCRIPT:
 %s`, trimmed)
@@ -241,85 +255,129 @@ TRANSCRIPT:
 		GenerationConfig *textGenConfig `json:"generation_config,omitempty"`
 	}
 
-	reqBody := textReq{
-		Model: s.nameModel,
-		Input: prompt,
-		GenerationConfig: &textGenConfig{
-			Temperature: 0.0,
-		},
-	}
-
-	reqBytes, err := json.Marshal(reqBody)
-	if err != nil {
-		log.Printf("resolveSpeakerNames: failed to marshal request: %v", err)
-		return rawTranscript
+	// Model candidates: primary configured model, followed by fallback model
+	models := []string{s.nameModel}
+	if s.nameModel != "gemini-3.5-flash-lite" {
+		models = append(models, "gemini-3.5-flash-lite")
+	} else {
+		models = append(models, "gemini-3.5-flash")
 	}
 
 	const apiURL = "https://generativelanguage.googleapis.com/v1beta/interactions"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(reqBytes))
-	if err != nil {
-		log.Printf("resolveSpeakerNames: failed to create request: %v", err)
-		return rawTranscript
-	}
 
-	req.Header.Set("x-goog-api-key", s.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		log.Printf("resolveSpeakerNames: request error: %v", err)
-		return rawTranscript
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		log.Printf("resolveSpeakerNames: read body error: %v", err)
-		return rawTranscript
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		log.Printf("resolveSpeakerNames: API returned status %d: %s", resp.StatusCode, string(body))
-		return rawTranscript
-	}
-
-	var intResp struct {
-		OutputText string `json:"output_text,omitempty"`
-		Steps      []struct {
-			Content []struct {
-				Text string `json:"text"`
-			} `json:"content"`
-		} `json:"steps"`
-	}
-
-	if err := json.Unmarshal(body, &intResp); err != nil {
-		log.Printf("resolveSpeakerNames: parse response error: %v", err)
-		return rawTranscript
-	}
-
-	var output string
-	if strings.TrimSpace(intResp.OutputText) != "" {
-		output = strings.TrimSpace(intResp.OutputText)
-	} else {
-		var sb strings.Builder
-		for _, step := range intResp.Steps {
-			for _, c := range step.Content {
-				sb.WriteString(c.Text)
-			}
+	for _, modelName := range models {
+		reqBody := textReq{
+			Model: modelName,
+			Input: prompt,
+			GenerationConfig: &textGenConfig{
+				Temperature: 0.0,
+			},
 		}
-		output = strings.TrimSpace(sb.String())
-	}
 
-	// Clean any markdown code fences if wrapped
-	output = strings.TrimPrefix(output, "```transcript")
-	output = strings.TrimPrefix(output, "```text")
-	output = strings.TrimPrefix(output, "```")
-	output = strings.TrimSuffix(output, "```")
-	output = strings.TrimSpace(output)
+		reqBytes, err := json.Marshal(reqBody)
+		if err != nil {
+			log.Printf("ResolveSpeakers (%s): failed to marshal request: %v", modelName, err)
+			continue
+		}
 
-	if output != "" && len(output) >= len(trimmed)/2 {
-		log.Printf("resolveSpeakerNames: successfully resolved speaker attribution (%d chars)", len(output))
-		return output
+		var respBody []byte
+		maxRetries := 2
+		backoff := 1 * time.Second
+
+		for attempt := 0; attempt <= maxRetries; attempt++ {
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(reqBytes))
+			if err != nil {
+				log.Printf("ResolveSpeakers (%s): failed to create request: %v", modelName, err)
+				break
+			}
+
+			req.Header.Set("x-goog-api-key", s.apiKey)
+			req.Header.Set("Content-Type", "application/json")
+
+			resp, err := s.httpClient.Do(req)
+			if err != nil {
+				if ctx.Err() != nil {
+					return rawTranscript
+				}
+				if attempt == maxRetries {
+					log.Printf("ResolveSpeakers (%s): request failed after %d retries: %v", modelName, maxRetries, err)
+					break
+				}
+				time.Sleep(backoff)
+				backoff *= 2
+				continue
+			}
+
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				log.Printf("ResolveSpeakers (%s): read body error: %v", modelName, err)
+				break
+			}
+
+			if resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusTooManyRequests {
+				if attempt < maxRetries {
+					log.Printf("ResolveSpeakers (%s): status %d, retrying in %v...", modelName, resp.StatusCode, backoff)
+					time.Sleep(backoff)
+					backoff *= 2
+					continue
+				}
+				// If 503/429 persists on this model, break to try fallback model
+				log.Printf("ResolveSpeakers (%s): persistent status %d, trying fallback model...", modelName, resp.StatusCode)
+				break
+			}
+
+			if resp.StatusCode != http.StatusOK {
+				log.Printf("ResolveSpeakers (%s): API returned status %d: %s", modelName, resp.StatusCode, string(body))
+				break
+			}
+
+			respBody = body
+			break
+		}
+
+		if len(respBody) == 0 {
+			continue
+		}
+
+		var intResp struct {
+			OutputText string `json:"output_text,omitempty"`
+			Steps      []struct {
+				Content []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"steps"`
+		}
+
+		if err := json.Unmarshal(respBody, &intResp); err != nil {
+			log.Printf("ResolveSpeakers (%s): parse response error: %v", modelName, err)
+			continue
+		}
+
+		var output string
+		if strings.TrimSpace(intResp.OutputText) != "" {
+			output = strings.TrimSpace(intResp.OutputText)
+		} else {
+			var sb strings.Builder
+			for _, step := range intResp.Steps {
+				for _, c := range step.Content {
+					sb.WriteString(c.Text)
+				}
+			}
+			output = strings.TrimSpace(sb.String())
+		}
+
+		// Clean any markdown code fences if wrapped
+		output = strings.TrimPrefix(output, "```transcript")
+		output = strings.TrimPrefix(output, "```text")
+		output = strings.TrimPrefix(output, "```")
+		output = strings.TrimSuffix(output, "```")
+		output = strings.TrimSpace(output)
+
+		if output != "" && len(output) >= len(trimmed)/2 {
+			log.Printf("ResolveSpeakers: successfully resolved speaker attribution using %s (%d chars)", modelName, len(output))
+			return output
+		}
 	}
 
 	return rawTranscript

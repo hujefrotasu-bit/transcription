@@ -3,18 +3,20 @@ package main
 import (
 	"log"
 	"net/http"
+	"os"
 
 	"github.com/joho/godotenv"
 
 	"transcript/database"
 	"transcript/routes"
 	"transcript/transcription"
+	"transcript/verification"
 )
 
 func main() {
 	// Load environment variables.
 	if err := godotenv.Load(); err != nil {
-		log.Fatal("Failed to load .env:", err)
+		log.Println("Note: .env file not loaded:", err)
 	}
 
 	// Connect to PostgreSQL.
@@ -39,15 +41,25 @@ func main() {
 	}
 	log.Println("Meeting minutes service ready (model:", momSvc.Model(), ")")
 
-	// 3. Wire up handler with DB + transcription + meeting minutes services.
+	// 3. Initialise Claude Fable verification service.
+	fableKey := os.Getenv("FABLE_API_KEY")
+	fableBaseURL := os.Getenv("FABLE_BASE_URL")
+	fableModel := os.Getenv("FABLE_MODEL")
+	fableClient := verification.NewFableClient(fableKey, fableBaseURL, fableModel)
+	verifier := verification.NewVerifier(fableClient)
+	verifHandler := verification.NewHandler(db, verifier)
+	log.Println("Fable verification service ready (model:", fableClient.Model, ")")
+
+	// 4. Wire up conversation handler with DB + transcription + meeting minutes + verifier services.
 	conversationHandler := &transcription.ConversationHandler{
 		DB:                   db,
 		TranscriptionService: audioSvc,
 		MinutesService:       momSvc,
+		Verifier:             verifier,
 	}
 
-	// 4. Initialise HTTP API routes using dedicated ServeMux.
-	router := routes.NewRouter(conversationHandler)
+	// 5. Initialise HTTP API routes using dedicated ServeMux.
+	router := routes.NewRouter(conversationHandler, verifHandler)
 
 	log.Println("Server running on http://localhost:8080")
 	if err = http.ListenAndServe(":8080", router); err != nil {

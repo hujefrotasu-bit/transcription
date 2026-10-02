@@ -111,11 +111,27 @@ type MeetingMinutes struct {
 	NextMeeting             NextMeeting           `json:"next_meeting"`
 }
 
+// TokenUsage tracks token consumption and estimated costs in INR and USD.
+type TokenUsage struct {
+	Model            string  `json:"model"`
+	InputTokens      int     `json:"input_tokens"`
+	OutputTokens     int     `json:"output_tokens"`
+	TotalTokens      int     `json:"total_tokens"`
+	EstimatedCostINR float64 `json:"estimated_cost_inr"`
+	EstimatedCostUSD float64 `json:"estimated_cost_usd"`
+}
+
 type MeetingMinutesRecord struct {
-	ID             uuid.UUID      `json:"id"`
-	ConversationID uuid.UUID      `json:"conversation_id"`
-	Data           MeetingMinutes `json:"data"`
-	CreatedAt      time.Time      `json:"created_at"`
+	ID               uuid.UUID      `json:"id"`
+	ConversationID   uuid.UUID      `json:"conversation_id"`
+	Data             MeetingMinutes `json:"data"`
+	Model            string         `json:"model"`
+	InputTokens      int            `json:"input_tokens"`
+	OutputTokens     int            `json:"output_tokens"`
+	TotalTokens      int            `json:"total_tokens"`
+	EstimatedCostINR float64        `json:"estimated_cost_inr"`
+	EstimatedCostUSD float64        `json:"estimated_cost_usd"`
+	CreatedAt        time.Time      `json:"created_at"`
 }
 
 // ExtractionResult holds both the resolved named transcript and structured MoM.
@@ -126,9 +142,9 @@ type ExtractionResult struct {
 
 // MeetingMinutesService defines the contract for MoM extraction and persistence.
 type MeetingMinutesService interface {
-	ExtractMeetingMinutes(ctx context.Context, transcript string) (*MeetingMinutes, string, error)
-	SaveMeetingMinutes(ctx context.Context, conversationID uuid.UUID, mom *MeetingMinutes) (*MeetingMinutesRecord, error)
-	ExtractAndSaveMeetingMinutes(ctx context.Context, conversationID uuid.UUID, transcript string) (*MeetingMinutes, string, error)
+	ExtractMeetingMinutes(ctx context.Context, transcript string) (*MeetingMinutes, string, *TokenUsage, error)
+	SaveMeetingMinutes(ctx context.Context, conversationID uuid.UUID, mom *MeetingMinutes, usage *TokenUsage) (*MeetingMinutesRecord, error)
+	ExtractAndSaveMeetingMinutes(ctx context.Context, conversationID uuid.UUID, transcript string) (*MeetingMinutes, string, *TokenUsage, error)
 }
 
 // GeminiService implements MeetingMinutesService using Google's Gemini Interactions API.
@@ -140,14 +156,17 @@ type GeminiMeetingMinutesService struct {
 }
 
 // NewGeminiService creates a new GeminiService with the given PostgreSQL connection pool.
-// Reads GEMINI_API_KEY from environment, and optionally GEMINI_TOPIC_MODEL (defaults to gemini-3.5-flash-lite).
+// Reads GEMINI_MOM_MODEL or GEMINI_TOPIC_MODEL (defaults to gemini-3.6-flash).
 func NewGeminiMeetingMinutesService(db *pgxpool.Pool) (*GeminiMeetingMinutesService, error) {
 	key := os.Getenv("GEMINI_API_KEY")
 	if key == "" {
 		return nil, fmt.Errorf("GEMINI_API_KEY is not set")
 	}
 
-	model := os.Getenv("GEMINI_TOPIC_MODEL")
+	model := os.Getenv("GEMINI_MOM_MODEL")
+	if model == "" {
+		model = os.Getenv("GEMINI_TOPIC_MODEL")
+	}
 	if model == "" {
 		model = "gemini-3.5-flash-lite"
 	}
@@ -186,11 +205,23 @@ type momResponseFormat struct {
 }
 
 type momInteractionsResponse struct {
-	ID         string               `json:"id"`
-	Status     string               `json:"status"`
-	OutputText string               `json:"output_text,omitempty"`
-	Steps      []momInteractionStep `json:"steps"`
-	Error      *struct {
+	ID            string               `json:"id"`
+	Status        string               `json:"status"`
+	OutputText    string               `json:"output_text,omitempty"`
+	Steps         []momInteractionStep `json:"steps"`
+	UsageMetadata *struct {
+		PromptTokenCount     int `json:"prompt_token_count"`
+		CandidatesTokenCount int `json:"candidates_token_count"`
+		TotalTokenCount      int `json:"total_token_count"`
+		InputTokens          int `json:"input_tokens"`
+		OutputTokens         int `json:"output_tokens"`
+	} `json:"usage_metadata,omitempty"`
+	Usage *struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+	} `json:"usage,omitempty"`
+	Error *struct {
 		Code    any    `json:"code"`
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
@@ -211,10 +242,10 @@ type momInteractionContent struct {
 // ─────────────────────────────────────────────
 
 // ExtractMeetingMinutes sends the transcript to Gemini, resolves speaker names in both transcript & MoM, and parses the structured result.
-func (s *GeminiMeetingMinutesService) ExtractMeetingMinutes(ctx context.Context, transcript string) (*MeetingMinutes, string, error) {
+func (s *GeminiMeetingMinutesService) ExtractMeetingMinutes(ctx context.Context, transcript string) (*MeetingMinutes, string, *TokenUsage, error) {
 	trimmedTranscript := strings.TrimSpace(transcript)
 	if trimmedTranscript == "" {
-		return nil, "", fmt.Errorf("transcript cannot be empty")
+		return nil, "", nil, fmt.Errorf("transcript cannot be empty")
 	}
 
 	prompt := fmt.Sprintf(`You are an expert AI system for extracting accurate, professional, and audit-grade Minutes of Meeting (MoM) from meeting transcripts.
@@ -290,7 +321,7 @@ Accuracy is more important than completeness. When uncertain, prefer omission or
 Return ONLY valid JSON matching this exact structure:
 
 {
-  "named_transcript": "...",
+  "named_transcript": "The full original dialogue transcript with generic speaker labels replaced by actual identified names (must be the complete full transcript, never just a title)",
   "meeting_minutes": {
     "meeting": {
       "title": null,
@@ -365,7 +396,7 @@ TRANSCRIPT
 
 	reqBytes, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to marshal request: %w", err)
+		return nil, "", nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
 	const apiURL = "https://generativelanguage.googleapis.com/v1beta/interactions"
@@ -378,7 +409,7 @@ TRANSCRIPT
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(reqBytes))
 		if err != nil {
-			return nil, "", fmt.Errorf("failed to create request: %w", err)
+			return nil, "", nil, fmt.Errorf("failed to create request: %w", err)
 		}
 
 		req.Header.Set("x-goog-api-key", s.apiKey)
@@ -387,10 +418,10 @@ TRANSCRIPT
 		resp, err := s.httpClient.Do(req)
 		if err != nil {
 			if ctx.Err() != nil {
-				return nil, "", fmt.Errorf("gemini interactions request canceled: %w", ctx.Err())
+				return nil, "", nil, fmt.Errorf("gemini interactions request canceled: %w", ctx.Err())
 			}
 			if attempt == maxRetries {
-				return nil, "", fmt.Errorf("gemini interactions request failed after %d retries: %w", maxRetries, err)
+				return nil, "", nil, fmt.Errorf("gemini interactions request failed after %d retries: %w", maxRetries, err)
 			}
 			log.Printf("Gemini interactions request error (attempt %d/%d): %v, retrying in %v...", attempt+1, maxRetries, err, backoff)
 			time.Sleep(backoff)
@@ -401,7 +432,7 @@ TRANSCRIPT
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
-			return nil, "", fmt.Errorf("failed to read response body: %w", err)
+			return nil, "", nil, fmt.Errorf("failed to read response body: %w", err)
 		}
 
 		if resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusTooManyRequests {
@@ -421,9 +452,9 @@ TRANSCRIPT
 				} `json:"error"`
 			}
 			if json.Unmarshal(body, &errResp) == nil && errResp.Error != nil {
-				return nil, "", fmt.Errorf("gemini API error (%v): %s", errResp.Error.Code, errResp.Error.Message)
+				return nil, "", nil, fmt.Errorf("gemini API error (%v): %s", errResp.Error.Code, errResp.Error.Message)
 			}
-			return nil, "", fmt.Errorf("gemini API returned status %d: %s", resp.StatusCode, string(body))
+			return nil, "", nil, fmt.Errorf("gemini API returned status %d: %s", resp.StatusCode, string(body))
 		}
 
 		respBody = body
@@ -432,11 +463,11 @@ TRANSCRIPT
 
 	var intResp momInteractionsResponse
 	if err = json.Unmarshal(respBody, &intResp); err != nil {
-		return nil, "", fmt.Errorf("failed to parse Gemini interactions response: %w", err)
+		return nil, "", nil, fmt.Errorf("failed to parse Gemini interactions response: %w", err)
 	}
 
 	if intResp.Error != nil {
-		return nil, "", fmt.Errorf("gemini API error (%v): %s", intResp.Error.Code, intResp.Error.Message)
+		return nil, "", nil, fmt.Errorf("gemini API error (%v): %s", intResp.Error.Code, intResp.Error.Message)
 	}
 
 	// Extract generated text from steps[].content[].text or output_text
@@ -457,7 +488,7 @@ TRANSCRIPT
 	}
 
 	if rawJSON == "" {
-		return nil, "", fmt.Errorf("no meeting minutes text returned by Gemini interactions API")
+		return nil, "", nil, fmt.Errorf("no meeting minutes text returned by Gemini interactions API")
 	}
 
 	rawJSON = strings.TrimPrefix(rawJSON, "```json")
@@ -495,7 +526,7 @@ TRANSCRIPT
 				}
 			}
 			if len(result.MeetingMinutes.Attendees) == 0 && len(result.MeetingMinutes.Decisions) == 0 && len(result.MeetingMinutes.ActionItems) == 0 && err != nil {
-				return nil, "", fmt.Errorf("failed to unmarshal meeting minutes JSON: %w (raw: %s)", err, rawJSON)
+				return nil, "", nil, fmt.Errorf("failed to unmarshal meeting minutes JSON: %w (raw: %s)", err, rawJSON)
 			}
 		}
 	}
@@ -522,17 +553,77 @@ TRANSCRIPT
 		mom.RisksIssuesDependencies = []RiskIssueDependency{}
 	}
 
-	finalTranscript := strings.TrimSpace(result.NamedTranscript)
-	if finalTranscript == "" {
-		finalTranscript = trimmedTranscript
+	finalTranscript := trimmedTranscript
+	trimmedNamed := strings.TrimSpace(result.NamedTranscript)
+	// Only accept namedTranscript if it's substantial dialogue (not just a title or short summary)
+	if len(trimmedNamed) >= len(trimmedTranscript)/2 && len(trimmedNamed) > 80 {
+		finalTranscript = trimmedNamed
 	}
 
-	return mom, finalTranscript, nil
+	// Calculate token usage and estimated costs in INR & USD
+	usage := &TokenUsage{
+		Model: s.model,
+	}
+	if intResp.UsageMetadata != nil {
+		usage.InputTokens = intResp.UsageMetadata.PromptTokenCount
+		if usage.InputTokens == 0 {
+			usage.InputTokens = intResp.UsageMetadata.InputTokens
+		}
+		usage.OutputTokens = intResp.UsageMetadata.CandidatesTokenCount
+		if usage.OutputTokens == 0 {
+			usage.OutputTokens = intResp.UsageMetadata.OutputTokens
+		}
+		usage.TotalTokens = intResp.UsageMetadata.TotalTokenCount
+		if usage.TotalTokens == 0 {
+			usage.TotalTokens = usage.InputTokens + usage.OutputTokens
+		}
+	} else if intResp.Usage != nil {
+		usage.InputTokens = intResp.Usage.PromptTokens
+		usage.OutputTokens = intResp.Usage.CompletionTokens
+		usage.TotalTokens = intResp.Usage.TotalTokens
+	}
+
+	// Heuristic fallback if API did not return token metrics (~4 characters per token)
+	if usage.InputTokens <= 0 {
+		usage.InputTokens = len(prompt) / 4
+		if usage.InputTokens < 1 {
+			usage.InputTokens = 1
+		}
+	}
+	if usage.OutputTokens <= 0 {
+		usage.OutputTokens = len(rawJSON) / 4
+		if usage.OutputTokens < 1 {
+			usage.OutputTokens = 1
+		}
+	}
+	if usage.TotalTokens <= 0 {
+		usage.TotalTokens = usage.InputTokens + usage.OutputTokens
+	}
+
+	// Gemini Pricing:
+	// gemini-3.5-flash-lite: $0.30/1M input, $2.50/1M output
+	// gemini-3.5-flash: $0.35/1M input, $2.50/1M output
+	// gemini-3.6-flash: $0.75/1M input, $3.75/1M output
+	// Conversion: 1 USD = 88.0 INR
+	inputRateUSD := 0.30
+	outputRateUSD := 2.50
+	if strings.Contains(s.model, "3.6") {
+		inputRateUSD = 0.75
+		outputRateUSD = 3.75
+	} else if !strings.Contains(s.model, "lite") && strings.Contains(s.model, "3.5") {
+		inputRateUSD = 0.35
+		outputRateUSD = 2.50
+	}
+
+	usage.EstimatedCostUSD = (float64(usage.InputTokens)*inputRateUSD + float64(usage.OutputTokens)*outputRateUSD) / 1000000.0
+	usage.EstimatedCostINR = usage.EstimatedCostUSD * 88.0
+
+	return mom, finalTranscript, usage, nil
 }
 
 // SaveMeetingMinutes persists extracted Minutes of Meeting into the meeting_minutes table with the given conversation_id.
 // If a record already exists for the conversation, it replaces it (upsert).
-func (s *GeminiMeetingMinutesService) SaveMeetingMinutes(ctx context.Context, conversationID uuid.UUID, mom *MeetingMinutes) (*MeetingMinutesRecord, error) {
+func (s *GeminiMeetingMinutesService) SaveMeetingMinutes(ctx context.Context, conversationID uuid.UUID, mom *MeetingMinutes, usage *TokenUsage) (*MeetingMinutesRecord, error) {
 	if mom == nil {
 		return nil, fmt.Errorf("meeting minutes cannot be nil")
 	}
@@ -545,36 +636,71 @@ func (s *GeminiMeetingMinutesService) SaveMeetingMinutes(ctx context.Context, co
 	recordID := uuid.New()
 	now := time.Now()
 
-	query := `INSERT INTO meeting_minutes (id, conversation_id, data, created_at)
-	          VALUES ($1, $2, $3, $4)
-	          ON CONFLICT (conversation_id) 
-	          DO UPDATE SET data = EXCLUDED.data, created_at = EXCLUDED.created_at
-	          RETURNING id, created_at`
+	modelName := s.model
+	inputTokens := 0
+	outputTokens := 0
+	totalTokens := 0
+	costINR := 0.0
+	costUSD := 0.0
 
-	err = s.db.QueryRow(ctx, query, recordID, conversationID, dataJSON, now).Scan(&recordID, &now)
+	if usage != nil {
+		if usage.Model != "" {
+			modelName = usage.Model
+		}
+		inputTokens = usage.InputTokens
+		outputTokens = usage.OutputTokens
+		totalTokens = usage.TotalTokens
+		costINR = usage.EstimatedCostINR
+		costUSD = usage.EstimatedCostUSD
+	}
+
+	query := `INSERT INTO meeting_minutes (
+		id, conversation_id, data, model, input_tokens, output_tokens, total_tokens, estimated_cost_inr, estimated_cost_usd, created_at
+	) VALUES (
+		$1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+	)
+	ON CONFLICT (conversation_id) 
+	DO UPDATE SET 
+		data = EXCLUDED.data,
+		model = EXCLUDED.model,
+		input_tokens = EXCLUDED.input_tokens,
+		output_tokens = EXCLUDED.output_tokens,
+		total_tokens = EXCLUDED.total_tokens,
+		estimated_cost_inr = EXCLUDED.estimated_cost_inr,
+		estimated_cost_usd = EXCLUDED.estimated_cost_usd,
+		created_at = EXCLUDED.created_at
+	RETURNING id, created_at`
+
+	err = s.db.QueryRow(ctx, query, recordID, conversationID, dataJSON, modelName, inputTokens, outputTokens, totalTokens, costINR, costUSD, now).Scan(&recordID, &now)
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert/update meeting minutes in database: %w", err)
 	}
 
 	return &MeetingMinutesRecord{
-		ID:             recordID,
-		ConversationID: conversationID,
-		Data:           *mom,
-		CreatedAt:      now,
+		ID:               recordID,
+		ConversationID:   conversationID,
+		Data:             *mom,
+		Model:            modelName,
+		InputTokens:      inputTokens,
+		OutputTokens:     outputTokens,
+		TotalTokens:      totalTokens,
+		EstimatedCostINR: costINR,
+		EstimatedCostUSD: costUSD,
+		CreatedAt:        now,
 	}, nil
 }
 
 // ExtractAndSaveMeetingMinutes coordinates MoM extraction, transcript name resolution, and database insertion.
-func (s *GeminiMeetingMinutesService) ExtractAndSaveMeetingMinutes(ctx context.Context, conversationID uuid.UUID, transcript string) (*MeetingMinutes, string, error) {
-	mom, namedTranscript, err := s.ExtractMeetingMinutes(ctx, transcript)
+func (s *GeminiMeetingMinutesService) ExtractAndSaveMeetingMinutes(ctx context.Context, conversationID uuid.UUID, transcript string) (*MeetingMinutes, string, *TokenUsage, error) {
+	mom, namedTranscript, usage, err := s.ExtractMeetingMinutes(ctx, transcript)
 	if err != nil {
-		return nil, "", fmt.Errorf("extract meeting minutes: %w", err)
+		return nil, "", nil, fmt.Errorf("extract meeting minutes: %w", err)
 	}
 
-	_, err = s.SaveMeetingMinutes(ctx, conversationID, mom)
+	_, err = s.SaveMeetingMinutes(ctx, conversationID, mom, usage)
 	if err != nil {
-		return nil, "", fmt.Errorf("save meeting minutes: %w", err)
+		return nil, "", nil, fmt.Errorf("save meeting minutes: %w", err)
 	}
 
-	return mom, namedTranscript, nil
+	return mom, namedTranscript, usage, nil
 }

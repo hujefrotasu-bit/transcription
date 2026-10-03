@@ -17,6 +17,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// Precompiled package-level regex to avoid re-parsing on every extraction request
+var reStrayDash = regexp.MustCompile(`(?m)^\s*-\s*$`)
+
 // ─────────────────────────────────────────────
 // Domain Models for Minutes of Meeting
 // ─────────────────────────────────────────────
@@ -176,7 +179,10 @@ func NewGeminiMeetingMinutesService(db *pgxpool.Pool) (*GeminiMeetingMinutesServ
 		apiKey:     key,
 		model:      model,
 		db:         db,
-		httpClient: &http.Client{Timeout: 5 * time.Minute},
+		httpClient: &http.Client{
+			Transport: sharedPooledTransport,
+			Timeout:   5 * time.Minute,
+		},
 	}, nil
 }
 
@@ -516,7 +522,6 @@ TRANSCRIPT
 	rawJSON = strings.TrimSpace(rawJSON)
 
 	// Clean stray markdown bullets or hyphens on their own line between JSON keys (e.g. "\n   -   \n")
-	reStrayDash := regexp.MustCompile(`(?m)^\s*-\s*$`)
 	rawJSON = reStrayDash.ReplaceAllString(rawJSON, "")
 
 	// Clean literal unescaped tabs in string values that cause invalid character '\t' in string

@@ -7,10 +7,26 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
 )
+
+// fablePooledTransport maintains a hot pool of persistent HTTP/2 connections for Fable audits.
+var fablePooledTransport = &http.Transport{
+	Proxy: http.ProxyFromEnvironment,
+	DialContext: (&net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 60 * time.Second,
+	}).DialContext,
+	ForceAttemptHTTP2:     true,
+	MaxIdleConns:          100,
+	MaxIdleConnsPerHost:   32,
+	IdleConnTimeout:       90 * time.Second,
+	TLSHandshakeTimeout:   10 * time.Second,
+	ExpectContinueTimeout: 1 * time.Second,
+}
 
 // FableClient interacts with the CodeCraft API for claude-fable models.
 type FableClient struct {
@@ -39,7 +55,8 @@ func NewFableClient(apiKey, baseURL, model string) *FableClient {
 		BaseURL: baseURL,
 		Model:   model,
 		HTTPClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Transport: fablePooledTransport,
+			Timeout:   120 * time.Second,
 		},
 	}
 }

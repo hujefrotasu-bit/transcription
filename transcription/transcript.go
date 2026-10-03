@@ -9,6 +9,7 @@ import (
 	"log"
 	"mime"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/textproto"
 	"os"
@@ -41,6 +42,23 @@ type GeminiTranscriptionService struct {
 // NewGeminiService reads GEMINI_API_KEY from the environment and constructs
 // a GeminiService. GEMINI_TRANSCRIPTION_MODEL overrides the default transcription model,
 // and GEMINI_TOPIC_MODEL overrides the default name resolution model.
+// sharedPooledTransport maintains a hot pool of persistent HTTP/2 connections.
+// Go's DefaultTransport restricts MaxIdleConnsPerHost to 2, forcing concurrent workers
+// to pay TLS 1.3 handshake overhead repeatedly. 32 idle connections keeps all workers warm.
+var sharedPooledTransport = &http.Transport{
+	Proxy: http.ProxyFromEnvironment,
+	DialContext: (&net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 60 * time.Second,
+	}).DialContext,
+	ForceAttemptHTTP2:     true,
+	MaxIdleConns:          100,
+	MaxIdleConnsPerHost:   32,
+	IdleConnTimeout:       90 * time.Second,
+	TLSHandshakeTimeout:   10 * time.Second,
+	ExpectContinueTimeout: 1 * time.Second,
+}
+
 func NewGeminiTranscriptionService() (*GeminiTranscriptionService, error) {
 	key := os.Getenv("GEMINI_API_KEY")
 	if key == "" {
@@ -65,7 +83,8 @@ func NewGeminiTranscriptionService() (*GeminiTranscriptionService, error) {
 		model:     model,
 		nameModel: nameModel,
 		httpClient: &http.Client{
-			Timeout: 5 * time.Minute, // audio upload + transcription can take time
+			Transport: sharedPooledTransport,
+			Timeout:   5 * time.Minute, // audio upload + transcription can take time
 		},
 	}, nil
 }
@@ -561,6 +580,27 @@ func (s *GeminiTranscriptionService) transcribeWithDiarization(ctx context.Conte
 				strings.Contains(strings.ToLower(iResp.Error.Message), "too_many_requests")))
 
 		if isRateLimit {
+			errMsg := ""
+			if iResp.Error != nil {
+				errMsg = strings.ToLower(iResp.Error.Message)
+			} else {
+				errMsg = strings.ToLower(string(respBody))
+			}
+
+			// Fail FAST if this is a daily quota exhaustion (e.g. 25 requests per day limit)
+			// Retrying won't help and would only freeze the UI for 3+ minutes.
+			isDailyQuota := strings.Contains(errMsg, "per day") ||
+				strings.Contains(errMsg, "daily") ||
+				strings.Contains(errMsg, "quota") ||
+				(strings.Contains(errMsg, "retry in") && (strings.Contains(errMsg, "h") || strings.Contains(errMsg, "d")))
+
+			if isDailyQuota {
+				if iResp.Error != nil {
+					return "", fmt.Errorf("Gemini API error (%v): %s", iResp.Error.Code, iResp.Error.Message)
+				}
+				return "", fmt.Errorf("Gemini daily quota exceeded: %s", string(respBody))
+			}
+
 			if attempt < maxRetries {
 				waitDuration := 30 * time.Second
 				if attempt >= 1 {

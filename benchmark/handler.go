@@ -75,7 +75,7 @@ func (h *Handler) HandleRunBenchmark(w http.ResponseWriter, r *http.Request) {
 	}
 
 	workersStr := r.FormValue("workers")
-	workers := 4
+	workers := 8
 	if workersStr != "" {
 		if wVal, err := strconv.Atoi(workersStr); err == nil && wVal > 0 {
 			workers = wVal
@@ -182,7 +182,7 @@ func (h *Handler) HandleRunSamples(w http.ResponseWriter, r *http.Request) {
 		auditMode = "fable"
 	}
 
-	workers := 4
+	workers := 8
 	if wStr := r.URL.Query().Get("workers"); wStr != "" {
 		if wVal, err := strconv.Atoi(wStr); err == nil && wVal > 0 {
 			workers = wVal

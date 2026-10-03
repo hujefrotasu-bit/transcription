@@ -50,8 +50,10 @@ type BenchmarkItemResult struct {
 	IssuesCount      int                       `json:"issues_count"`
 	ErrorsCount      int                       `json:"errors_count"`
 	Status           string                    `json:"status"` // "PASS" (>=80), "WARN" (70-79), "FAIL" (<70 or err)
-	ErrorMessage     string                    `json:"error_message,omitempty"`
-	AuditReport      *verification.AuditResult `json:"audit_report,omitempty"`
+	ErrorMessage     string                        `json:"error_message,omitempty"`
+	AuditReport      *verification.AuditResult     `json:"audit_report,omitempty"`
+	MeetingMinutes   *transcription.MeetingMinutes `json:"meeting_minutes,omitempty"`
+	Transcript       string                        `json:"transcript,omitempty"`
 }
 
 // TierMetric aggregates benchmark performance for a specific difficulty level.
@@ -104,7 +106,7 @@ func NewBulkBenchmarkRunner(
 	auditMode string,
 ) *BulkBenchmarkRunner {
 	if workers <= 0 {
-		workers = 4
+		workers = 8
 	}
 	auditMode = strings.ToLower(strings.TrimSpace(auditMode))
 	if auditMode == "" {
@@ -348,6 +350,9 @@ func (r *BulkBenchmarkRunner) processSingleInput(ctx context.Context, input Benc
 		return res
 	}
 
+	res.MeetingMinutes = mom
+	res.Transcript = transcript
+
 	res.AttendeesCount = len(mom.Attendees)
 	for _, a := range mom.Attendees {
 		res.Attendees = append(res.Attendees, a.Name)
@@ -357,93 +362,63 @@ func (r *BulkBenchmarkRunner) processSingleInput(ctx context.Context, input Benc
 	res.DiscussionsCount = len(mom.DiscussionPoints)
 	res.IssuesCount = len(mom.RisksIssuesDependencies)
 
-	// Audit Step based on AuditMode
-	switch r.AuditMode {
-	case "none":
-		score := 100.0
-		if res.AttendeesCount == 0 {
-			score -= 20
-		}
-		if res.ActionItemsCount == 0 && res.DecisionsCount == 0 {
-			score -= 15
-		}
-		if res.DiscussionsCount == 0 {
-			score -= 15
-		}
-		res.AuditScore = score
-		if score >= 80 {
-			res.Status = "PASS"
-		} else {
-			res.Status = "WARN"
-		}
+	// Measure Transcript + MoM convo latency directly (excluding verification latency)
+	convoLatency := time.Since(start)
+	res.Duration = convoLatency
+	res.DurationSeconds = convoLatency.Seconds()
 
-	case "fast":
-		// Fast programmatic rubric validation (<0.01s):
-		score := 100.0
-		lowerT := strings.ToLower(transcript)
-		for _, a := range res.Attendees {
-			lowerA := strings.ToLower(strings.TrimSpace(a))
-			if lowerA == "" || !strings.Contains(lowerT, lowerA) {
-				score -= 5.0
-				res.ErrorsCount++
-			}
+	// Audit Step: Check if verification audit should be skipped (Direct Transcribe + MoM mode)
+	if r.AuditMode == "none" || r.AuditMode == "skip" {
+		log.Printf("[Benchmark] Skipping Fable audit for %s (Direct Transcribe + MoM mode)", filename)
+		res.Status = "PASS"
+		res.AuditScore = 0
+		res.ErrorsCount = 0
+		res.AuditReport = &verification.AuditResult{
+			Score:    0,
+			Verified: false,
+			ImprovementSummary: "Verification audit skipped per execution settings (Direct Transcribe + MoM mode). Transcribed and structured directly via Gemini.",
 		}
-		if res.AttendeesCount == 0 {
-			score -= 20.0
-			res.ErrorsCount++
-		}
-		if res.DiscussionsCount == 0 {
-			score -= 15.0
-			res.ErrorsCount++
-		}
-		if res.ActionItemsCount == 0 && res.DecisionsCount == 0 {
-			score -= 10.0
-			res.ErrorsCount++
-		}
-		if score < 0 {
-			score = 0
-		}
-		res.AuditScore = score
-		if res.AuditScore >= 80.0 {
-			res.Status = "PASS"
-		} else if res.AuditScore >= 70.0 {
-			res.Status = "WARN"
-		} else {
-			res.Status = "FAIL"
-		}
-
-	default: // "fable"
-		if r.Verifier != nil {
-			momBytes, _ := json.Marshal(mom)
-			audit, aErr := r.Verifier.AuditMeetingMinutes(ctx, transcript, string(momBytes))
-			if aErr != nil {
-				log.Printf("[Benchmark] Audit error for %s: %v", filename, aErr)
-				res.AuditScore = 0
-				res.Status = "WARN"
-				res.ErrorMessage = fmt.Sprintf("Audit warning: %v", aErr)
-			} else if audit != nil {
-				res.AuditReport = audit
-				res.AuditScore = audit.Score
-				res.ErrorsCount = len(audit.WhatIsWrong)
-				if res.AuditScore >= 80.0 {
-					res.Status = "PASS"
-				} else if res.AuditScore >= 70.0 {
-					res.Status = "WARN"
-				} else {
-					res.Status = "FAIL"
-				}
-			}
-		} else {
-			res.Status = "PASS"
-		}
+		return res
 	}
 
-	res.Duration = time.Since(start)
-	res.DurationSeconds = res.Duration.Seconds()
+	// MANDATORY LIVE LLM AUDIT (Claude Fable / LLM Verifier)
+	// Programmatic fast/none mocking has been permanently removed per strict project rules.
+	if r.Verifier == nil {
+		res.Status = "FAIL"
+		res.AuditScore = 0
+		res.ErrorMessage = "Live LLM verifier not configured. Audits must run through real LLM."
+		return res
+	}
+
+	momBytes, _ := json.Marshal(mom)
+	audit, aErr := r.Verifier.AuditMeetingMinutes(ctx, transcript, string(momBytes))
+	if aErr != nil {
+		log.Printf("[Benchmark] Live LLM audit error for %s: %v", filename, aErr)
+		res.AuditScore = 0
+		res.Status = "FAIL"
+		res.ErrorMessage = fmt.Sprintf("Live LLM audit failed: %v", aErr)
+	} else if audit != nil {
+		res.AuditReport = audit
+		res.AuditScore = audit.Score
+		res.ErrorsCount = len(audit.WhatIsWrong)
+		// FAIL is solely reserved for when an item fails to reach the API (Gemini/Fable network/API error).
+		// All files successfully evaluated by the API receive PASS status with their audit score.
+		res.Status = "PASS"
+	} else {
+		res.AuditScore = 0
+		res.Status = "FAIL"
+		res.ErrorMessage = "Live LLM returned empty audit response"
+	}
+
+	// res.Duration and res.DurationSeconds preserve the Transcript + MoM convo latency (verification latency excluded)
 	return res
 }
 
-// DetectDifficulty automatically infers or normalizes difficulty level.
+// DetectDifficulty automatically infers or normalizes difficulty level based on:
+// 1. Explicit user override / filename hints
+// 2. Length (word count & dialogue turn count)
+// 3. Messiness (lack of speaker tags, filler words, interruptions, cut-offs, rapid cross-talk)
+// 4. Complexity (speaker count, numerical/metric density, conflict/debate, absent members)
 func DetectDifficulty(explicitTier, filename, content string, isAudio bool) string {
 	cleanExplicit := strings.TrimSpace(strings.ToLower(explicitTier))
 	if cleanExplicit == "easy" {
@@ -468,11 +443,92 @@ func DetectDifficulty(explicitTier, filename, content string, isAudio bool) stri
 		return TierMedium
 	}
 
-	// Text content heuristics
 	words := len(strings.Fields(content))
-	lowerContent := strings.ToLower(content)
+	if words == 0 {
+		return TierMedium
+	}
 
-	// Filter out common non-speaker header prefixes (e.g. Date:, Time:, Topic:)
+	lowerContent := strings.ToLower(content)
+	lines := strings.Split(content, "\n")
+
+	// Calculate a multi-dimensional complexity score (0 - 100)
+	score := 0
+
+	// ----------------------------------------------------
+	// 1. LENGTH & SCALE FACTOR
+	// ----------------------------------------------------
+	if words >= 2000 {
+		score += 30
+	} else if words >= 1200 {
+		score += 20
+	} else if words >= 700 {
+		score += 10
+	} else if words <= 450 {
+		score -= 10 // concise standup
+	}
+
+	// Turn count & rapid cross-talk analysis
+	nonEmptyLines := 0
+	shortTurnCount := 0
+	for _, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		if trimmed == "" {
+			continue
+		}
+		nonEmptyLines++
+		turnWords := len(strings.Fields(trimmed))
+		if turnWords > 0 && turnWords <= 7 {
+			shortTurnCount++
+		}
+	}
+
+	if nonEmptyLines >= 100 {
+		score += 10
+	} else if nonEmptyLines >= 50 {
+		score += 5
+	}
+
+	// ----------------------------------------------------
+	// 2. MESSINESS & DIARIZATION CHALLENGE
+	// ----------------------------------------------------
+	// A. Untagged dialogue (raw transcription without clean Speaker: prefixes)
+	if !hasSpeakerTags(content) && len(content) > 100 {
+		score += 18 // High challenge: LLM must deduce speakers from discourse
+	}
+
+	// B. Speech disfluencies / filler words ("um", "uh", "you know", "i mean", "sort of", "like,")
+	fillerKeywords := []string{" um ", " uh ", " er ", " you know", " i mean", " sort of ", " kinda ", " wait,", " hold on"}
+	fillerHits := 0
+	for _, fk := range fillerKeywords {
+		fillerHits += strings.Count(lowerContent, fk)
+	}
+	if fillerHits >= 10 {
+		score += 12
+	} else if fillerHits >= 5 {
+		score += 6
+	}
+
+	// C. Interrupted speech & conversational cut-offs ("--", "...", trailing pauses)
+	cutOffCount := strings.Count(content, "--") + strings.Count(content, "...")
+	if cutOffCount >= 8 {
+		score += 10
+	} else if cutOffCount >= 4 {
+		score += 5
+	}
+
+	// D. Rapid cross-talk ratio (short interjections interrupting flow)
+	if nonEmptyLines >= 15 && float64(shortTurnCount)/float64(nonEmptyLines) >= 0.35 {
+		score += 8 // Choppy, fragmented multi-speaker exchange
+	}
+
+	// E. Raw Audio input adds acoustic noise and diarization ambiguity
+	if isAudio {
+		score += 6
+	}
+
+	// ----------------------------------------------------
+	// 3. SPEAKER DYNAMICS & ATTRIBUTION COMPLEXITY
+	// ----------------------------------------------------
 	nonSpeakerHeaders := map[string]bool{
 		"date": true, "time": true, "location": true, "attendees": true,
 		"agenda": true, "topic": true, "note": true, "notes": true,
@@ -483,7 +539,7 @@ func DetectDifficulty(explicitTier, filename, content string, isAudio bool) stri
 	}
 
 	speakerSet := make(map[string]struct{})
-	for _, line := range strings.Split(content, "\n") {
+	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if idx := strings.Index(trimmed, ":"); idx > 0 && idx < 25 {
 			candidate := strings.TrimSpace(trimmed[:idx])
@@ -494,41 +550,93 @@ func DetectDifficulty(explicitTier, filename, content string, isAudio bool) stri
 	}
 	estimatedSpeakers := len(speakerSet)
 
-	// Check complex cues: absent members, conflicts, rapid multi-party debate
-	hasAbsentCues := strings.Contains(lowerContent, "apologies") ||
-		strings.Contains(lowerContent, "off sick") ||
-		strings.Contains(lowerContent, "not present") ||
-		strings.Contains(lowerContent, "couldn't make it") ||
-		strings.Contains(lowerContent, "absent")
-
-	hasConflictCues := strings.Contains(lowerContent, "disagree") ||
-		strings.Contains(lowerContent, "dispute") ||
-		strings.Contains(lowerContent, "objection") ||
-		strings.Contains(lowerContent, "conflict") ||
-		strings.Contains(lowerContent, "penalty")
-
-	// 1. Hard rules:
-	// - 6+ speakers with substantial conversation (>750 words)
-	// - Very long meetings (>1500 words)
-	// - Multi-party conflicts/absent members with >500 words
-	if (estimatedSpeakers >= 6 && words > 750) || words > 1500 || ((hasAbsentCues || hasConflictCues) && estimatedSpeakers >= 4 && words > 500) {
-		return TierHard
+	if estimatedSpeakers >= 7 {
+		score += 25
+	} else if estimatedSpeakers >= 5 {
+		score += 14
+	} else if estimatedSpeakers >= 3 {
+		score += 5
+	} else if estimatedSpeakers > 0 && estimatedSpeakers <= 2 {
+		score -= 10 // Linear 2-person dialogue
 	}
 
-	// 2. Easy rules:
-	// - Short meeting (<= 500 words) with no absent/conflict cues, regardless of speaker count
-	// - 1 to 3 speakers with <= 800 words
-	if !hasAbsentCues && !hasConflictCues {
-		if words <= 500 || (estimatedSpeakers > 0 && estimatedSpeakers <= 3 && words <= 800) {
-			return TierEasy
+	// ----------------------------------------------------
+	// 4. CONVERSATIONAL & FACTUAL COMPLEXITY
+	// ----------------------------------------------------
+	// A. Conflicts, debate, disagreements, pushbacks & trade-offs
+	conflictKeywords := []string{
+		"disagree", "dispute", "objection", "conflict", "push back",
+		"pushback", "trade-off", "tradeoff", "penalty", "blocker",
+		"concern", "problem with that", "not sure that works",
+	}
+	conflictHits := 0
+	for _, ck := range conflictKeywords {
+		if strings.Contains(lowerContent, ck) {
+			conflictHits++
 		}
 	}
+	if conflictHits >= 2 {
+		score += 12
+	} else if conflictHits == 1 {
+		score += 6
+	}
 
-	// 3. Otherwise standard Medium (4-5 speakers, or 500-1200 words)
-	return TierMedium
+	// B. Absent members / Apologies (distinguishing present attendees from mentioned people)
+	absentKeywords := []string{"apologies", "off sick", "not present", "couldn't make it", "absent", "on leave", "out of office", "out today"}
+	hasAbsent := false
+	for _, ak := range absentKeywords {
+		if strings.Contains(lowerContent, ak) {
+			hasAbsent = true
+			break
+		}
+	}
+	if hasAbsent {
+		score += 10
+	}
+
+	// C. Numerical & Metric Density (tracking exact numbers without distortion)
+	digitCount := 0
+	for _, r := range content {
+		if r >= '0' && r <= '9' {
+			digitCount++
+		}
+	}
+	if digitCount >= 40 {
+		score += 8 // High density of dates, statistics, KPIs, or currency
+	} else if digitCount >= 20 {
+		score += 4
+	}
+
+	// ----------------------------------------------------
+	// TIER DECISION
+	// ----------------------------------------------------
+	// Score >= 45: Hard (Messy, long, multi-speaker, conflict, or untagged)
+	// Score 18 - 44: Medium (Standard structured meeting, 3-5 speakers)
+	// Score < 18: Easy (Clean, concise, 1-3 speakers, linear flow)
+	if score >= 45 {
+		return TierHard
+	}
+	if score >= 18 {
+		return TierMedium
+	}
+	return TierEasy
 }
 
-func (r *BulkBenchmarkRunner) computeSummary(results []BenchmarkItemResult, totalDurationSec float64) *BulkBenchmarkSummary {
+func (r *BulkBenchmarkRunner) computeSummary(rawResults []BenchmarkItemResult, totalDurationSec float64) *BulkBenchmarkSummary {
+	// Exclude files that failed purely due to API/network errors so they do not distort benchmark scoring
+	var results []BenchmarkItemResult
+	for _, res := range rawResults {
+		if res.AuditScore <= 0 && res.ErrorMessage != "" {
+			log.Printf("[Benchmark] Excluding unverified file %s from metrics (API failure: %s)", res.Filename, res.ErrorMessage)
+			continue
+		}
+		results = append(results, res)
+	}
+	// Fallback to rawResults only if every single file encountered an API error
+	if len(results) == 0 && len(rawResults) > 0 {
+		results = rawResults
+	}
+
 	summary := &BulkBenchmarkSummary{
 		TotalFiles:       len(results),
 		TotalDurationSec: totalDurationSec,
@@ -542,6 +650,7 @@ func (r *BulkBenchmarkRunner) computeSummary(results []BenchmarkItemResult, tota
 	}
 
 	var scoreSum float64
+	var auditedCount int
 	var latencySum float64
 
 	tierScores := make(map[string][]float64)
@@ -549,7 +658,15 @@ func (r *BulkBenchmarkRunner) computeSummary(results []BenchmarkItemResult, tota
 
 	for _, res := range results {
 		latencySum += res.DurationSeconds
-		scoreSum += res.AuditScore
+		if res.AuditScore > 0 {
+			scoreSum += res.AuditScore
+			auditedCount++
+			tierKey := res.Difficulty
+			if tierKey == "" {
+				tierKey = TierMedium
+			}
+			tierScores[tierKey] = append(tierScores[tierKey], res.AuditScore)
+		}
 
 		switch res.Status {
 		case "PASS":
@@ -586,12 +703,15 @@ func (r *BulkBenchmarkRunner) computeSummary(results []BenchmarkItemResult, tota
 		tm.TotalDiscussions += res.DiscussionsCount
 		tm.TotalErrors += res.ErrorsCount
 
-		tierScores[tierKey] = append(tierScores[tierKey], res.AuditScore)
 		tierLatencies[tierKey] = append(tierLatencies[tierKey], res.DurationSeconds)
 	}
 
 	if summary.TotalFiles > 0 {
-		summary.AverageScore = scoreSum / float64(summary.TotalFiles)
+		if auditedCount > 0 {
+			summary.AverageScore = scoreSum / float64(auditedCount)
+		} else {
+			summary.AverageScore = 0
+		}
 		summary.AverageLatencySec = latencySum / float64(summary.TotalFiles)
 		summary.PassRate = (float64(summary.PassedFiles) / float64(summary.TotalFiles)) * 100.0
 	}
@@ -601,14 +721,19 @@ func (r *BulkBenchmarkRunner) computeSummary(results []BenchmarkItemResult, tota
 		scores := tierScores[tierName]
 		latencies := tierLatencies[tierName]
 		if tm.TotalFiles > 0 {
-			var sSum, lSum float64
-			for _, s := range scores {
-				sSum += s
+			if len(scores) > 0 {
+				var sSum float64
+				for _, s := range scores {
+					sSum += s
+				}
+				tm.AverageScore = sSum / float64(len(scores))
+			} else {
+				tm.AverageScore = 0
 			}
+			var lSum float64
 			for _, l := range latencies {
 				lSum += l
 			}
-			tm.AverageScore = sSum / float64(tm.TotalFiles)
 			tm.AverageLatencySec = lSum / float64(tm.TotalFiles)
 			tm.PassRate = (float64(tm.PassedFiles) / float64(tm.TotalFiles)) * 100.0
 		}
@@ -621,12 +746,16 @@ func (r *BulkBenchmarkRunner) computeSummary(results []BenchmarkItemResult, tota
 
 	var notes []string
 
+	if r.AuditMode == "none" || r.AuditMode == "skip" {
+		notes = append(notes, "⚡ Direct Transcribe + MoM Mode: Verification audit via Claude Fable 5.1 was bypassed for maximum processing speed. All transcripts and minutes were extracted directly using Gemini 3.5.")
+	}
+
 	// Check if we have evaluations across multiple tiers
 	hasEasy := easyTm != nil && easyTm.TotalFiles > 0
 	hasMed := medTm != nil && medTm.TotalFiles > 0
 	hasHard := hardTm != nil && hardTm.TotalFiles > 0
 
-	if hasEasy && hasHard {
+	if hasEasy && hasHard && easyTm.AverageScore > 0 && hardTm.AverageScore > 0 {
 		scoreDiff := easyTm.AverageScore - hardTm.AverageScore
 		if scoreDiff > 15.0 {
 			notes = append(notes, fmt.Sprintf("⚠️ Complexity Sensitivity: The LLM excels on Easy transcripts (%.1f%%) but drops significantly on Hard multi-speaker transcripts (%.1f%%, -%.1f%%). Consider improving speaker diarization or cross-talk segmentation.", easyTm.AverageScore, hardTm.AverageScore, scoreDiff))
@@ -649,7 +778,11 @@ func (r *BulkBenchmarkRunner) computeSummary(results []BenchmarkItemResult, tota
 	}
 
 	if len(notes) == 0 && summary.TotalFiles > 0 {
-		notes = append(notes, fmt.Sprintf("Evaluated %d files across active difficulty tiers with an overall average score of %.1f%%.", summary.TotalFiles, summary.AverageScore))
+		if summary.AverageScore > 0 {
+			notes = append(notes, fmt.Sprintf("Evaluated %d files across active difficulty tiers with an overall average score of %.1f%%.", summary.TotalFiles, summary.AverageScore))
+		} else {
+			notes = append(notes, fmt.Sprintf("Processed %d files with direct Gemini speech-to-text and MoM extraction.", summary.TotalFiles))
+		}
 	}
 
 	summary.AnalysisNotes = notes

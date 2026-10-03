@@ -19,9 +19,9 @@ go run ./benchmark/cmd -dir="C:/path/to/your/files"
 ```
 
 ### 3. Customize Concurrency (Workers)
-Control the parallel worker pool (recommended: 3–4 workers for optimal speed without rate limits):
+Control the parallel worker pool (default: 8 workers for maximum speed):
 ```powershell
-go run ./benchmark/cmd -dir=benchmark/testdata -workers=4
+go run ./benchmark/cmd -dir=benchmark/testdata -workers=8
 ```
 
 ---

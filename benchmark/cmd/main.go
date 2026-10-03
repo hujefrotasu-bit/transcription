@@ -18,8 +18,8 @@ import (
 
 func main() {
 	dirFlag := flag.String("dir", "benchmark/testdata", "Directory containing audio and transcript files to benchmark")
-	workersFlag := flag.Int("workers", 4, "Number of concurrent worker threads (recommended: 4-6)")
-	auditFlag := flag.String("audit", "fast", "Audit mode: 'fast' (lightning ~1s rubric check), 'fable' (deep Claude audit ~30s), or 'none'")
+	workersFlag := flag.Int("workers", 8, "Number of concurrent worker threads (recommended: 4-8)")
+	auditFlag := flag.String("audit", "fable", "Audit mode: 'fable' (Live Claude Fable LLM QC audit)")
 	outDirFlag := flag.String("out", "benchmark/reports", "Output directory for benchmark CSV and JSON reports")
 	envPathFlag := flag.String("env", ".env", "Path to .env configuration file")
 	flag.Parse()

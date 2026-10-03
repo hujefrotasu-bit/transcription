@@ -387,8 +387,10 @@ func (h *ConversationHandler) UploadAudio(w http.ResponseWriter, r *http.Request
 		log.Printf("UploadAudio: created new conversation %s (audio: %s) with status 'processing'", id, cleanFilename)
 	}
 
+	skipVerification := r.URL.Query().Get("skip_verification") == "true" || r.FormValue("skip_verification") == "true"
+
 	// Launch transcription and MoM extraction asynchronously in the background.
-	go h.processAudioBackground(id, localFilePath, cleanFilename)
+	go h.processAudioBackground(id, localFilePath, cleanFilename, skipVerification)
 
 	// Return immediately with 200 OK so the HTTP request completes in <1s and never times out.
 	writeJSON(w, http.StatusOK, conversationResponse{
@@ -400,8 +402,8 @@ func (h *ConversationHandler) UploadAudio(w http.ResponseWriter, r *http.Request
 }
 
 // processAudioBackground performs audio transcription and MoM generation in a detached background goroutine.
-func (h *ConversationHandler) processAudioBackground(id uuid.UUID, localFilePath, cleanFilename string) {
-	log.Printf("processAudioBackground: starting transcription for conversation %s (%s)", id, cleanFilename)
+func (h *ConversationHandler) processAudioBackground(id uuid.UUID, localFilePath, cleanFilename string, skipVerification bool) {
+	log.Printf("processAudioBackground: starting transcription for conversation %s (%s, skipVerification=%t)", id, cleanFilename, skipVerification)
 
 	savedAudioFile, err := os.Open(localFilePath)
 	if err != nil {
@@ -443,8 +445,8 @@ func (h *ConversationHandler) processAudioBackground(id uuid.UUID, localFilePath
 			return
 		}
 
-		// Automatically run Fable audit and version comparison
-		if h.Verifier != nil && mom != nil {
+		// Automatically run Fable audit and version comparison unless verification was bypassed
+		if !skipVerification && h.Verifier != nil && mom != nil {
 			log.Printf("processAudioBackground: running automatic Fable verification for conversation %s", id)
 			momBytes, _ := json.Marshal(mom)
 			momStr := string(momBytes)
@@ -491,6 +493,16 @@ func (h *ConversationHandler) processAudioBackground(id uuid.UUID, localFilePath
 						newVer, id, vRec.Score, vRec.ScoreDelta, vRec.IsImproved)
 				}
 			}
+		} else if skipVerification && h.Verifier != nil && mom != nil {
+			log.Printf("processAudioBackground: skipping Fable verification per request for conversation %s", id)
+			momBytes, _ := json.Marshal(mom)
+			momStr := string(momBytes)
+			prevRecord, _ := h.Verifier.GetLatestVersion(ctx, h.DB, id)
+			newVer := 1
+			if prevRecord != nil {
+				newVer = prevRecord.VersionNumber + 1
+			}
+			_, _ = h.Verifier.SaveVersion(ctx, h.DB, id, newVer, momStr, nil, nil, toVerifierUsage(tokenUsage))
 		}
 	}
 

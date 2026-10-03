@@ -455,17 +455,26 @@ func (v *Verifier) GetVersions(ctx context.Context, pool *pgxpool.Pool, conversa
 
 func cleanFableJSON(raw string) string {
 	raw = strings.TrimSpace(raw)
-	if strings.HasPrefix(raw, "```") {
-		lines := strings.Split(raw, "\n")
-		if len(lines) >= 2 {
-			if strings.HasPrefix(lines[0], "```") {
-				lines = lines[1:]
-			}
-			if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[len(lines)-1]), "```") {
-				lines = lines[:len(lines)-1]
-			}
-			raw = strings.Join(lines, "\n")
+	if strings.Contains(raw, "```") {
+		firstIdx := strings.Index(raw, "```")
+		rest := raw[firstIdx+3:]
+		if idx := strings.Index(rest, "\n"); idx != -1 {
+			rest = rest[idx+1:]
+		}
+		if lastIdx := strings.LastIndex(rest, "```"); lastIdx != -1 {
+			raw = rest[:lastIdx]
+		} else {
+			raw = rest
+		}
+	} else {
+		start := strings.Index(raw, "{")
+		end := strings.LastIndex(raw, "}")
+		if start != -1 && end != -1 && end > start {
+			raw = raw[start : end+1]
 		}
 	}
-	return strings.TrimSpace(raw)
+	raw = strings.TrimSpace(raw)
+	// Sanitize unescaped tabs in JSON string literals
+	raw = strings.ReplaceAll(raw, "\t", " ")
+	return raw
 }

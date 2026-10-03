@@ -2,10 +2,53 @@ package verification
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// flexString safely converts string, []any, map, bool, float, int, or nil into a clean string.
+func flexString(val any) string {
+	if val == nil {
+		return ""
+	}
+	switch v := val.(type) {
+	case string:
+		return v
+	case []byte:
+		return string(v)
+	case []any:
+		if len(v) == 0 {
+			return ""
+		}
+		allStr := true
+		strs := make([]string, len(v))
+		for i, el := range v {
+			if s, ok := el.(string); ok {
+				strs[i] = s
+			} else {
+				allStr = false
+				break
+			}
+		}
+		if allStr {
+			return strings.Join(strs, ", ")
+		}
+		b, err := json.Marshal(v)
+		if err == nil {
+			return string(b)
+		}
+		return fmt.Sprintf("%v", v)
+	default:
+		b, err := json.Marshal(v)
+		if err == nil {
+			return string(b)
+		}
+		return fmt.Sprintf("%v", v)
+	}
+}
 
 // ScoreBreakdown represents the calibrated 100-point scoring formula.
 type ScoreBreakdown struct {
@@ -29,12 +72,22 @@ func (v *VerifiedItem) UnmarshalJSON(data []byte) error {
 		v.Claim = s
 		return nil
 	}
-	type Alias VerifiedItem
-	var a Alias
-	if err := json.Unmarshal(data, &a); err != nil {
+	var raw struct {
+		Field              any `json:"field"`
+		Claim              any `json:"claim"`
+		GeneratedValue     any `json:"generated_value"`
+		TranscriptEvidence any `json:"transcript_evidence"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	*v = VerifiedItem(a)
+	v.Field = flexString(raw.Field)
+	claim := flexString(raw.Claim)
+	if claim == "" {
+		claim = flexString(raw.GeneratedValue)
+	}
+	v.Claim = claim
+	v.TranscriptEvidence = flexString(raw.TranscriptEvidence)
 	return nil
 }
 
@@ -55,12 +108,36 @@ func (e *VerificationError) UnmarshalJSON(data []byte) error {
 		e.Problem = s
 		return nil
 	}
-	type Alias VerificationError
-	var a Alias
-	if err := json.Unmarshal(data, &a); err != nil {
+	var raw struct {
+		Severity              any `json:"severity"`
+		Field                 any `json:"field"`
+		GeneratedValue        any `json:"generated_value"`
+		Problem               any `json:"problem"`
+		Issue                 any `json:"issue"`
+		TranscriptEvidence    any `json:"transcript_evidence"`
+		CorrectionInstruction any `json:"correction_instruction"`
+		Correction            any `json:"correction"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	*e = VerificationError(a)
+	e.Severity = flexString(raw.Severity)
+	if e.Severity == "" {
+		e.Severity = "medium"
+	}
+	e.Field = flexString(raw.Field)
+	e.GeneratedValue = flexString(raw.GeneratedValue)
+	prob := flexString(raw.Problem)
+	if prob == "" {
+		prob = flexString(raw.Issue)
+	}
+	e.Problem = prob
+	e.TranscriptEvidence = flexString(raw.TranscriptEvidence)
+	corr := flexString(raw.CorrectionInstruction)
+	if corr == "" {
+		corr = flexString(raw.Correction)
+	}
+	e.CorrectionInstruction = corr
 	return nil
 }
 
@@ -78,12 +155,26 @@ func (m *MissingInformation) UnmarshalJSON(data []byte) error {
 		m.Information = s
 		return nil
 	}
-	type Alias MissingInformation
-	var a Alias
-	if err := json.Unmarshal(data, &a); err != nil {
+	var raw struct {
+		Field              any `json:"field"`
+		Information        any `json:"information"`
+		Importance         any `json:"importance"`
+		Description        any `json:"description"`
+		TranscriptEvidence any `json:"transcript_evidence"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	*m = MissingInformation(a)
+	m.Field = flexString(raw.Field)
+	info := flexString(raw.Information)
+	if info == "" {
+		info = flexString(raw.Importance)
+	}
+	if info == "" {
+		info = flexString(raw.Description)
+	}
+	m.Information = info
+	m.TranscriptEvidence = flexString(raw.TranscriptEvidence)
 	return nil
 }
 
@@ -96,6 +187,20 @@ type AuditResult struct {
 	WhatIsWrong        []VerificationError  `json:"what_is_wrong"`       // List of errors
 	MissingInformation []MissingInformation `json:"missing_information"` // List of omissions
 	ImprovementSummary string               `json:"improvement_summary"` // Summary of what needs fixing
+}
+
+func (a *AuditResult) UnmarshalJSON(data []byte) error {
+	type Alias AuditResult
+	var aux struct {
+		Alias
+		ImprovementSummary any `json:"improvement_summary"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	*a = AuditResult(aux.Alias)
+	a.ImprovementSummary = flexString(aux.ImprovementSummary)
+	return nil
 }
 
 // VersionComparisonResult compares a candidate Meeting Minutes (vN) against a previous version (vN-1) and the transcript.

@@ -346,7 +346,6 @@ Accuracy is more important than completeness. When uncertain, prefer omission or
 Return ONLY valid JSON matching this exact structure:
 
 {
-  "named_transcript": "The full original dialogue transcript with generic speaker labels replaced by actual identified names (must be the complete full transcript, never just a title)",
   "meeting_minutes": {
     "meeting": {
       "title": null,
@@ -563,6 +562,9 @@ TRANSCRIPT
 	}
 
 	mom := &result.MeetingMinutes
+	if result.NamedTranscript == "" {
+		result.NamedTranscript = trimmedTranscript
+	}
 
 	// Ensure slice fields are non-nil for JSON array serialization consistency
 	if mom.Attendees == nil {

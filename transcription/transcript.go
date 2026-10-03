@@ -134,7 +134,7 @@ type transcriptionMode struct {
 type audioInteractionsResponse struct {
 	Steps []audioInteractionStep `json:"steps"`
 	Error *struct {
-		Code    int    `json:"code"`
+		Code    any    `json:"code"`
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
 }
@@ -421,38 +421,66 @@ func (s *GeminiTranscriptionService) uploadFile(ctx context.Context, audio io.Re
 
 	const uploadURL = "https://generativelanguage.googleapis.com/upload/v1beta/files?uploadType=multipart"
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, &body)
-	if err != nil {
-		return "", fmt.Errorf("failed to build upload request: %w", err)
-	}
-	req.Header.Set("x-goog-api-key", s.apiKey)
-	req.Header.Set("Content-Type", "multipart/related; boundary="+mw.Boundary())
+	payloadBytes := body.Bytes()
+	contentType := "multipart/related; boundary=" + mw.Boundary()
 
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("upload request failed: %w", err)
-	}
-	defer resp.Body.Close()
+	maxRetries := 3
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, bytes.NewReader(payloadBytes))
+		if err != nil {
+			return "", fmt.Errorf("failed to build upload request: %w", err)
+		}
+		req.Header.Set("x-goog-api-key", s.apiKey)
+		req.Header.Set("Content-Type", contentType)
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to read upload response: %w", err)
+		resp, err := s.httpClient.Do(req)
+		if err != nil {
+			if ctx.Err() != nil {
+				return "", fmt.Errorf("upload request canceled: %w", ctx.Err())
+			}
+			if attempt == maxRetries {
+				return "", fmt.Errorf("upload request failed: %w", err)
+			}
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		respBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return "", fmt.Errorf("failed to read upload response: %w", err)
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests {
+			if attempt < maxRetries {
+				log.Printf("[Gemini File Upload] Rate limit 429 hit. Worker waiting 30s before retry %d/%d...", attempt+1, maxRetries)
+				select {
+				case <-ctx.Done():
+					return "", ctx.Err()
+				case <-time.After(30 * time.Second):
+				}
+				continue
+			}
+			return "", fmt.Errorf("file upload API returned 429 rate limit after retries: %s", string(respBody))
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return "", fmt.Errorf("file upload API returned %d: %s", resp.StatusCode, string(respBody))
+		}
+
+		var uploadResp uploadFileResponse
+		if err = json.Unmarshal(respBody, &uploadResp); err != nil {
+			return "", fmt.Errorf("failed to parse upload response: %w", err)
+		}
+
+		if uploadResp.File.URI == "" {
+			return "", fmt.Errorf("file upload returned empty URI")
+		}
+
+		return uploadResp.File.URI, nil
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("file upload API returned %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	var uploadResp uploadFileResponse
-	if err = json.Unmarshal(respBody, &uploadResp); err != nil {
-		return "", fmt.Errorf("failed to parse upload response: %w", err)
-	}
-
-	if uploadResp.File.URI == "" {
-		return "", fmt.Errorf("file upload returned empty URI")
-	}
-
-	return uploadResp.File.URI, nil
+	return "", fmt.Errorf("file upload failed: exceeded max retries")
 }
 
 // ─────────────────────────────────────────────
@@ -493,44 +521,83 @@ func (s *GeminiTranscriptionService) transcribeWithDiarization(ctx context.Conte
 
 	const interactionsURL = "https://generativelanguage.googleapis.com/v1beta/interactions"
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, interactionsURL, bytes.NewReader(reqBytes))
-	if err != nil {
-		return "", fmt.Errorf("failed to build interactions request: %w", err)
-	}
-	req.Header.Set("x-goog-api-key", s.apiKey)
-	req.Header.Set("Content-Type", "application/json")
+	maxRetries := 4
+	backoff := 15 * time.Second
 
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("interactions request failed: %w", err)
-	}
-	defer resp.Body.Close()
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, interactionsURL, bytes.NewReader(reqBytes))
+		if err != nil {
+			return "", fmt.Errorf("failed to build interactions request: %w", err)
+		}
+		req.Header.Set("x-goog-api-key", s.apiKey)
+		req.Header.Set("Content-Type", "application/json")
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to read interactions response: %w", err)
+		resp, err := s.httpClient.Do(req)
+		if err != nil {
+			if ctx.Err() != nil {
+				return "", fmt.Errorf("interactions request canceled: %w", ctx.Err())
+			}
+			if attempt == maxRetries {
+				return "", fmt.Errorf("interactions request failed after %d retries: %w", maxRetries, err)
+			}
+			log.Printf("[Gemini Transcribe] Network error (attempt %d/%d): %v, retrying in %v...", attempt+1, maxRetries, err, backoff)
+			time.Sleep(backoff)
+			backoff *= 2
+			continue
+		}
+
+		respBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return "", fmt.Errorf("failed to read interactions response: %w", err)
+		}
+
+		var iResp audioInteractionsResponse
+		_ = json.Unmarshal(respBody, &iResp)
+
+		isRateLimit := resp.StatusCode == http.StatusTooManyRequests ||
+			(iResp.Error != nil && (fmt.Sprintf("%v", iResp.Error.Code) == "429" ||
+				strings.Contains(strings.ToLower(iResp.Error.Message), "rate limit") ||
+				strings.Contains(strings.ToLower(iResp.Error.Message), "too_many_requests")))
+
+		if isRateLimit {
+			if attempt < maxRetries {
+				waitDuration := 30 * time.Second
+				if attempt >= 1 {
+					waitDuration = 52 * time.Second
+				}
+				log.Printf("[Gemini Transcribe] Rate limit hit (3 RPM free-tier limit). Worker waiting %v before retry %d/%d...", waitDuration, attempt+1, maxRetries)
+				select {
+				case <-ctx.Done():
+					return "", ctx.Err()
+				case <-time.After(waitDuration):
+				}
+				continue
+			}
+			if iResp.Error != nil {
+				return "", fmt.Errorf("Gemini API error (%v): %s", iResp.Error.Code, iResp.Error.Message)
+			}
+			return "", fmt.Errorf("interactions API returned 429 rate limit after %d retries", maxRetries)
+		}
+
+		// Check for API-level errors before checking status code.
+		if iResp.Error != nil {
+			return "", fmt.Errorf("Gemini API error (%v): %s", iResp.Error.Code, iResp.Error.Message)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return "", fmt.Errorf("interactions API returned %d: %s", resp.StatusCode, string(respBody))
+		}
+
+		transcript := formatDiarizedTranscript(iResp.Steps)
+		if strings.TrimSpace(transcript) != "" {
+			return strings.TrimSpace(transcript), nil
+		}
+
+		return "", fmt.Errorf("no transcript returned by Gemini")
 	}
 
-	var iResp audioInteractionsResponse
-	if err = json.Unmarshal(respBody, &iResp); err != nil {
-		return "", fmt.Errorf("failed to parse interactions response: %w", err)
-	}
-
-	// Check for API-level errors before checking status code.
-	if iResp.Error != nil {
-		return "", fmt.Errorf("Gemini API error (%d): %s", iResp.Error.Code, iResp.Error.Message)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("interactions API returned %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	transcript := formatDiarizedTranscript(iResp.Steps)
-	if strings.TrimSpace(transcript) != "" {
-		return strings.TrimSpace(transcript), nil
-	}
-
-	return "", fmt.Errorf("no transcript returned by Gemini")
+	return "", fmt.Errorf("transcription failed: exceeded maximum retries")
 }
 
 // formatDiarizedTranscript formats the transcript with speaker labels (e.g., "Speaker 1: ...")

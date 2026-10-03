@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -259,14 +260,17 @@ Every extracted attendee, agenda topic, discussion point, decision, action item,
 Accuracy is more important than completeness. When uncertain, prefer omission or null over guessing.
 
 ==================================================
-2. ATTENDEES (STRICT PRESENCE RULE: ONLY ACTIVE CONVERSATION PARTICIPANTS)
+2. ATTENDEES (STRICT PRESENCE & COMPLETE ROSTER RULE)
 ==================================================
 * CRITICAL ATTENDEE RULE: Include in "attendees" ONLY individuals who were ACTUALLY PRESENT in the conversation and actively participated / spoke in the dialogue.
+* ALL SPEAKING PARTICIPANTS MUST BE IN ATTENDEES:
+  - If some participants speak under generic tags (e.g. "Speaker 1", "Speaker 2", "Speaker 3") because their personal names were not introduced, you MUST include them in "attendees" (e.g. name: "Speaker 1", "Speaker 2") so that EVERY speaking participant and every action item owner is accounted for in the attendee list. Never assign an action item to a speaker who is not listed in "attendees".
 * NON-ATTENDEES MUST BE STRICTLY EXCLUDED:
   - If someone is NOT in the conversation, THEY MUST NOT BE IN "attendees".
   - Merely mentioning a person's name does NOT make them an attendee (e.g. "ask Clive", "check with Sarah in finance", "our contact at Acme", "the client said", "we need an external researcher"). If they did not actively participate in the conversation, DO NOT add them to "attendees".
   - Anyone absent, off sick, on leave, working remotely without attending, or who sent apologies MUST BE STRICTLY EXCLUDED from "attendees". (Record absences in "discussion_points", NEVER in "attendees").
   - Do NOT list "Narrator", generic groups ("All Staff"), or third-party companies as attendees.
+* CHAIRPERSON ATTRIBUTION: Set "chairperson" to null unless someone is explicitly designated as chair or explicitly acts as the sole meeting facilitator/lead. Never guess or attribute chairperson to a participant simply because they gave a report, update, or spoke on technical issues.
 * LATE ARRIVALS: Only if someone actually arrives during the meeting and actively speaks in the dialogue are they an attendee. If they never arrived or never spoke, they are NOT an attendee.
 
 ==================================================
@@ -279,29 +283,39 @@ Accuracy is more important than completeness. When uncertain, prefer omission or
 4. DISCUSSION POINTS & DISPUTED NUMBERS
 ==================================================
 * Maintain objective, neutral summaries of substantive discussions.
-* NO UNVERIFIED CAUSALITY: Never state that Event A caused Event B unless explicit causal words ("caused by", "because of", "as a result of") are spoken. Report adjacent events as separate factual items (e.g. report a power issue occurred, and report that paying electricity bills was agreed, but do NOT state that unpaid bills caused the power cut).
+* NO UNVERIFIED CAUSALITY: Never state that Event A caused Event B unless explicit causal words ("caused by", "because of", "as a result of") are spoken. Report adjacent events as separate factual items (e.g. if the transcript states that the office network went down, the router restarted twice, and IT suspects an ISP problem, report these as separate facts without stating the outage was "due to a router issue").
 * NUMBERS & FINANCIAL DATA: Copy numbers verbatim. If units or labels are not stated, do not guess them (e.g. do not label a figure as "revenue difference" if the transcript only clarifies the number as 11).
 
 ==================================================
-5. DECISIONS VS SUGGESTIONS
+5. DECISIONS VS SUGGESTIONS (STRICT NO-HALLUCINATION RULE)
 ==================================================
-* Decisions require explicit consensus, formal approval, or chair ruling (e.g. "Agreed", "That settles that", "agreed by the group").
+* Decisions require explicit consensus, formal approval, or chair ruling (e.g. "Agreed", "That settles that", "agreed by the group", "let's go with X").
+* EXPLORATORY PROPOSALS & BRAINSTORMING ARE NOT DECISIONS:
+  - In product design, architectural reviews, or brainstorming sessions (e.g. discussing remote control features, D-pads vs push buttons, touch screens, ergonomic biomorphic shapes, materials), exploratory suggestions are NOT decisions!
+  - Casual agreement or positive reactions (e.g. "that sounds like a good strong idea", "I don't see why not", "could be an option", "it's worth considering") do NOT make it a decision.
+  - Summarize these ideas in "discussion_points", NEVER in "decisions".
+  - If no formal, binding decision was finalized during the dialogue, record "decisions": []. NEVER record an open proposal as an approved decision.
 * DECISIONS ON PROCEDURE & VOTING: When participants agree on a course of action for collecting feedback or making selections (e.g. agreeing to collect staff morale options and put them to a company-wide vote), this is an agreed Decision on procedure and MUST be recorded in decisions.
-* SUGGESTIONS & REJECTED PROPOSALS: Brainstormed ideas, casual suggestions, or rejected proposals (e.g. darts, go-karting, party Pilates) are NOT decisions.
 * ARITHMETIC CONSTRAINTS: Respect explicitly stated totals. Never record decisions that invent allocations exceeding established limits (e.g. allocating 9 spaces when the transcript establishes only 5 total spaces). Distinguish initial brainstormed numbers (like 4 sales staff) from finalized allocations (3 for visitors, 2 for Sue and Jason).
 
 ==================================================
 6. ACTION ITEMS, OWNERS & DEADLINES
 ==================================================
 * EXHAUSTIVE COMMITMENT SWEEP: Scan the transcript thoroughly for all explicit verbal commitments, directives, or agreed tasks starting with active verbs ("I will", "I'll", "let's", "can you", "we need to", "make sure they're scheduled").
+* ONE ACTION ITEM PER DISTINCT TASK (DO NOT COMBINE TASKS): Never merge two separate tasks into a single action item, especially if spoken by or assigned to different people. If Person A is asked to do Task 1 and Person B is asked to do Task 2, create TWO separate action items. Never attribute Person B's task to Person A.
+* NO DUPLICATE OR REDUNDANT ACTION ITEMS: If an attendee commits to a task initially and then reiterates or confirms that commitment later in the meeting (e.g. "I'll check formatting"), record it as a SINGLE action item. Do not create duplicate action items for the same underlying work.
+* THOROUGH COMPLETENESS: Capture all explicit directives and commitments, including technical investigations, bundle analysis, and final reviews agreed to by participants.
 * INDIVIDUAL SPOKEN COMMITMENTS: Whenever an attendee states a personal commitment to handle an action (e.g. "I'll coordinate letting the next member know...", "I'll speak with Clive and let you know date..."), capture it as an action item with that person as owner.
 * FUTURE SCHEDULING COMMITMENTS: Directives to schedule or carry forward an issue for a subsequent meeting (e.g. "make sure they're scheduled for the next meeting") MUST be recorded as an action item (owner: null if unassigned) AND noted under next_meeting.agenda.
 * ACTION DESCRIPTIONS: Begin each action item with a clear active verb (e.g. "Circulate...", "Submit...", "Speak with...", "Schedule...", "Coordinate...").
 * OWNERS: Assign an owner ONLY if someone explicitly volunteered (e.g. "I'll send it", "I'll speak with...") or was directly assigned by the chair without objection.
+  - Every assigned owner MUST be a valid attendee listed in "attendees". If a task is volunteered by "Speaker 2", owner must be "Speaker 2" and "Speaker 2" must be in "attendees".
   - If a task is assigned to everyone present or company staff (e.g. coming up with 4 ideas), record owner as "All Attendees" or "All Staff".
   - If no specific person volunteered or was assigned, record owner: null.
   - NEVER infer an owner based on who complained or brought up the problem.
-* DEADLINES: Extract explicit deadlines only (e.g. "within two days", "next meeting").
+* DEADLINES & DUE DATES:
+  - When an explicit time or deadline is stated (e.g. "by seven", "by eight", "tonight after nine", "first thing tomorrow", "within two days", "next meeting"), record it in due_date. Do NOT leave due_date as null when an explicit timeframe was spoken.
+  - VERBATIM MERIDIAN (DO NOT INVENT AM/PM): If the transcript states "by seven" or "after nine" without specifying AM or PM, record it exactly as stated (e.g. "By 7", "Tonight after 9"). Do NOT append "PM" or "AM" unless explicitly spoken in the dialogue.
   - TENTATIVE SUGGESTION RULE: If a timeframe or deadline was merely suggested by another person (e.g. "maybe in the next two weeks?") but was NOT confirmed or accepted by the task owner or chair, record due_date: null. Do NOT turn tentative suggestions into confirmed deadlines.
 * STATUS: Set status to "Pending" for all newly agreed action items.
 
@@ -318,6 +332,7 @@ Accuracy is more important than completeness. When uncertain, prefer omission or
 * If topics are explicitly requested to be scheduled for the next meeting (e.g. cleanliness issues), record them under agenda as scheduled topics.
 * Do not present a single carried-forward item as the entire exclusive agenda.
 * date and time must be null unless explicitly confirmed.
+* VERBATIM TIME (DO NOT INVENT AM/PM): If the meeting time is stated as "Three", record time as "3:00" or "Three" without assuming "PM" unless explicitly stated.
 
 ==================================================
 9. OUTPUT FORMAT
@@ -499,6 +514,13 @@ TRANSCRIPT
 	rawJSON = strings.TrimPrefix(rawJSON, "```")
 	rawJSON = strings.TrimSuffix(rawJSON, "```")
 	rawJSON = strings.TrimSpace(rawJSON)
+
+	// Clean stray markdown bullets or hyphens on their own line between JSON keys (e.g. "\n   -   \n")
+	reStrayDash := regexp.MustCompile(`(?m)^\s*-\s*$`)
+	rawJSON = reStrayDash.ReplaceAllString(rawJSON, "")
+
+	// Clean literal unescaped tabs in string values that cause invalid character '\t' in string
+	rawJSON = strings.ReplaceAll(rawJSON, "\t", "  ")
 
 	var result ExtractionResult
 	if err = json.Unmarshal([]byte(rawJSON), &result); err != nil || (len(result.MeetingMinutes.Attendees) == 0 && len(result.MeetingMinutes.Decisions) == 0 && len(result.MeetingMinutes.ActionItems) == 0 && len(result.MeetingMinutes.DiscussionPoints) == 0) {

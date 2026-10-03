@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -18,6 +19,8 @@ import (
 	"transcript/transcription"
 	"transcript/verification"
 )
+
+var reGenericSpeaker = regexp.MustCompile(`(?i)^(Speaker\s*\d+|Speaker\s*[A-Z]|SPEAKER_\d+|Participant\s*\d+):`)
 
 // Difficulty levels for benchmark testing
 const (
@@ -312,8 +315,8 @@ func (r *BulkBenchmarkRunner) processSingleInput(ctx context.Context, input Benc
 		// Text transcript
 		transcript = string(fileBytes)
 
-		// Resolve speakers on raw text only if not already tagged with speaker names
-		if !hasSpeakerTags(transcript) && r.AudioService != nil {
+		// Resolve speakers on raw text if untagged OR if tags are generic (e.g. "Speaker 1:", "Speaker 2:")
+		if (!hasSpeakerTags(transcript) || hasGenericSpeakerTags(transcript)) && r.AudioService != nil {
 			resolved := r.AudioService.ResolveSpeakers(ctx, transcript)
 			if strings.TrimSpace(resolved) != "" && len(resolved) >= len(transcript)/2 {
 				transcript = strings.TrimSpace(resolved)
@@ -341,7 +344,7 @@ func (r *BulkBenchmarkRunner) processSingleInput(ctx context.Context, input Benc
 		return res
 	}
 
-	mom, _, _, mErr := r.MinutesService.ExtractMeetingMinutes(ctx, transcript)
+	mom, resolvedTranscript, _, mErr := r.MinutesService.ExtractMeetingMinutes(ctx, transcript)
 	if mErr != nil {
 		res.Status = "FAIL"
 		res.ErrorMessage = fmt.Sprintf("MoM extraction error: %v", mErr)
@@ -351,7 +354,11 @@ func (r *BulkBenchmarkRunner) processSingleInput(ctx context.Context, input Benc
 	}
 
 	res.MeetingMinutes = mom
-	res.Transcript = transcript
+	if strings.TrimSpace(resolvedTranscript) != "" {
+		res.Transcript = resolvedTranscript
+	} else {
+		res.Transcript = transcript
+	}
 
 	res.AttendeesCount = len(mom.Attendees)
 	for _, a := range mom.Attendees {
@@ -870,4 +877,15 @@ func hasSpeakerTags(text string) bool {
 		}
 	}
 	return total > 0 && (float64(tagged)/float64(total) >= 0.5)
+}
+
+func hasGenericSpeakerTags(text string) bool {
+	lines := strings.Split(text, "\n")
+	for _, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		if reGenericSpeaker.MatchString(trimmed) {
+			return true
+		}
+	}
+	return false
 }

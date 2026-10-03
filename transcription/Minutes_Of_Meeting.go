@@ -18,7 +18,10 @@ import (
 )
 
 // Precompiled package-level regex to avoid re-parsing on every extraction request
-var reStrayDash = regexp.MustCompile(`(?m)^\s*-\s*$`)
+var (
+	reStrayDash     = regexp.MustCompile(`(?m)^\s*-\s*$`)
+	reDialogueTurn  = regexp.MustCompile(`(?m)^([A-Za-z0-9 _.-]{1,35}):\s+\S`)
+)
 
 // ─────────────────────────────────────────────
 // Domain Models for Minutes of Meeting
@@ -138,10 +141,11 @@ type MeetingMinutesRecord struct {
 	CreatedAt        time.Time      `json:"created_at"`
 }
 
-// ExtractionResult holds both the resolved named transcript and structured MoM.
+// ExtractionResult holds both the resolved named transcript, speaker mappings, and structured MoM.
 type ExtractionResult struct {
-	NamedTranscript string         `json:"named_transcript"`
-	MeetingMinutes  MeetingMinutes `json:"meeting_minutes"`
+	NamedTranscript string            `json:"named_transcript,omitempty"`
+	SpeakerMap      map[string]string `json:"speaker_map,omitempty"`
+	MeetingMinutes  MeetingMinutes    `json:"meeting_minutes"`
 }
 
 // MeetingMinutesService defines the contract for MoM extraction and persistence.
@@ -263,17 +267,22 @@ The transcript provided at the end of this prompt is the ONLY source of truth. U
 1. SOURCE OF TRUTH & EVIDENCE FIRST
 ==================================================
 Every extracted attendee, agenda topic, discussion point, decision, action item, owner, deadline, risk, and next-meeting detail MUST be directly grounded in the dialogue. If the transcript is silent or ambiguous, use null or [].
-Accuracy is more important than completeness. When uncertain, prefer omission or null over guessing.
+Accuracy is more important than completeness. When uncertain, prefer omission or null over guessing. NEVER invent, assume, or hallucinate names, surnames, or titles not spoken in the transcript (e.g. if the transcript only gives an honorific or first name, do not guess or append an unstated surname).
 
 ==================================================
 2. ATTENDEES (STRICT PRESENCE & COMPLETE ROSTER RULE)
 ==================================================
 * CRITICAL ATTENDEE RULE: Include in "attendees" ONLY individuals who were ACTUALLY PRESENT in the conversation and actively participated / spoke in the dialogue.
-* ALL SPEAKING PARTICIPANTS MUST BE IN ATTENDEES:
-  - If some participants speak under generic tags (e.g. "Speaker 1", "Speaker 2", "Speaker 3") because their personal names were not introduced, you MUST include them in "attendees" (e.g. name: "Speaker 1", "Speaker 2") so that EVERY speaking participant and every action item owner is accounted for in the attendee list. Never assign an action item to a speaker who is not listed in "attendees".
+* DEDUCE REAL NAMES FROM CONVERSATIONAL EVIDENCE (DIRECT ADDRESS & FLOOR HANDOFFS):
+  - When a participant speaking under a generic label (e.g. "Speaker 2") is addressed by name in dialogue (e.g. Speaker A addresses them: "[Name], could you take us through the update?" and Speaker B responds: "Certainly", or "[Name], what is your perspective?" -> "I agree"), the dialogue provides definitive conversational evidence that Speaker B IS [Name].
+  - You MUST list their actual identified name (e.g. name: "[Name]") in "attendees", and include the mapping in "speaker_map". NEVER leave them as generic "Speaker 2" when dialogue reveals their identity!
+  - Use the identified real name consistently across attendees, discussion_points, and action items.
+* ALL SPEAKING PARTICIPANTS MUST BE IN ATTENDEES (COMPLETE ROSTER):
+  - Every individual who spoke in the dialogue MUST be included in "attendees".
+  - If a speaking participant was addressed by name or introduced, list them by their deduced real name.
+  - If a speaking participant speaks but their personal name is not revealed, include them under their speaker label (e.g. name: "Speaker 1") so that the attendee roster accounts for all speaking participants.
 * NON-ATTENDEES MUST BE STRICTLY EXCLUDED:
-  - If someone is NOT in the conversation, THEY MUST NOT BE IN "attendees".
-  - Merely mentioning a person's name does NOT make them an attendee (e.g. "ask Clive", "check with Sarah in finance", "our contact at Acme", "the client said", "we need an external researcher"). If they did not actively participate in the conversation, DO NOT add them to "attendees".
+  - Merely mentioning an absent third party's name does NOT make them an attendee (e.g. a guest mentioned as arriving later, an absent team member, external contacts, or clients). If they did not actively participate in the conversation, DO NOT add them to "attendees".
   - Anyone absent, off sick, on leave, working remotely without attending, or who sent apologies MUST BE STRICTLY EXCLUDED from "attendees". (Record absences in "discussion_points", NEVER in "attendees").
   - Do NOT list "Narrator", generic groups ("All Staff"), or third-party companies as attendees.
 * CHAIRPERSON ATTRIBUTION: Set "chairperson" to null unless someone is explicitly designated as chair or explicitly acts as the sole meeting facilitator/lead. Never guess or attribute chairperson to a participant simply because they gave a report, update, or spoke on technical issues.
@@ -346,6 +355,9 @@ Accuracy is more important than completeness. When uncertain, prefer omission or
 Return ONLY valid JSON matching this exact structure:
 
 {
+  "speaker_map": {
+    "Generic Speaker Label": "Deduced Real Name"
+  },
   "meeting_minutes": {
     "meeting": {
       "title": null,
@@ -566,11 +578,53 @@ TRANSCRIPT
 		result.NamedTranscript = trimmedTranscript
 	}
 
+	finalTranscript := trimmedTranscript
+	if len(result.SpeakerMap) > 0 {
+		for genericLabel, realName := range result.SpeakerMap {
+			genericLabel = strings.TrimSpace(genericLabel)
+			realName = strings.TrimSpace(realName)
+			if genericLabel == "" || realName == "" || strings.EqualFold(genericLabel, realName) {
+				continue
+			}
+			re := regexp.MustCompile(`(?mi)^` + regexp.QuoteMeta(genericLabel) + `\s*:`)
+			finalTranscript = re.ReplaceAllString(finalTranscript, realName+":")
+
+			for i := range mom.Attendees {
+				if strings.EqualFold(mom.Attendees[i].Name, genericLabel) {
+					mom.Attendees[i].Name = realName
+				}
+			}
+
+			for i := range mom.ActionItems {
+				if mom.ActionItems[i].Owner != nil && strings.EqualFold(*mom.ActionItems[i].Owner, genericLabel) {
+					mom.ActionItems[i].Owner = &realName
+				}
+			}
+		}
+	}
+	if result.NamedTranscript != "" && result.NamedTranscript != trimmedTranscript {
+		finalTranscript = result.NamedTranscript
+	}
+
 	// Ensure slice fields are non-nil for JSON array serialization consistency
 	if mom.Attendees == nil {
 		mom.Attendees = []Attendee{}
 	} else {
-		mom.Attendees = filterValidAttendees(mom.Attendees, trimmedTranscript)
+		mom.Attendees = filterValidAttendees(mom.Attendees, finalTranscript)
+	}
+
+	// Guarantee every speaking participant who actually has turns in finalTranscript is in attendees
+	for _, spk := range extractDialogueSpeakers(finalTranscript) {
+		found := false
+		for _, att := range mom.Attendees {
+			if strings.EqualFold(att.Name, spk) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			mom.Attendees = append(mom.Attendees, Attendee{Name: spk})
+		}
 	}
 	if mom.Agenda == nil {
 		mom.Agenda = []string{}
@@ -587,8 +641,6 @@ TRANSCRIPT
 	if mom.RisksIssuesDependencies == nil {
 		mom.RisksIssuesDependencies = []RiskIssueDependency{}
 	}
-
-	finalTranscript := trimmedTranscript
 
 	// Calculate token usage and estimated costs in INR & USD
 	usage := &TokenUsage{
@@ -648,6 +700,27 @@ TRANSCRIPT
 	usage.EstimatedCostUSD = (float64(usage.InputTokens)*inputRateUSD + float64(usage.OutputTokens)*outputRateUSD) / 1000000.0
 	usage.EstimatedCostINR = usage.EstimatedCostUSD * 88.0
 	return mom, finalTranscript, usage, nil
+}
+
+// extractDialogueSpeakers finds all distinct speaker names that actively lead dialogue turns in the transcript.
+func extractDialogueSpeakers(transcript string) []string {
+	var speakers []string
+	seen := make(map[string]bool)
+	matches := reDialogueTurn.FindAllStringSubmatch(transcript, -1)
+	for _, m := range matches {
+		if len(m) > 1 {
+			spk := strings.TrimSpace(m[1])
+			lowerSpk := strings.ToLower(spk)
+			if lowerSpk == "note" || lowerSpk == "agenda" || lowerSpk == "topic" || lowerSpk == "time" || lowerSpk == "date" || lowerSpk == "location" {
+				continue
+			}
+			if !seen[lowerSpk] {
+				seen[lowerSpk] = true
+				speakers = append(speakers, spk)
+			}
+		}
+	}
+	return speakers
 }
 
 // filterValidAttendees ensures only people who were actually present and participating

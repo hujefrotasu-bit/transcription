@@ -236,11 +236,12 @@ Accurately identify WHO is speaking every single line/turn in the transcript and
 "SpeakerName: Utterance..."
 
 SPEAKER IDENTIFICATION & DEDUCTION RULES:
-1. DIRECT ADDRESS VS SPEAKER (CRITICAL):
+1. DIRECT ADDRESS, FLOOR HANDOFFS & RESPONDENTS (CRITICAL EVIDENCE):
    - When an utterance addresses someone by name (e.g. "[Name], you said yesterday...", "[Name], what do you think?", "Okay, then [Name], you'll need to...", "right, [Name]?"), the SPEAKER of that line is NEVER [Name]. It is someone else speaking to [Name]. A person NEVER addresses themselves in the second person ("you")!
-   - When someone is directly asked a question or assigned a task ("[Name], you said yesterday that..."), the IMMEDIATE NEXT turn answering ("Yeah, that's what I found...") is spoken by [Name].
-   - A participant NEVER thanks themselves: when an utterance says "Thanks, [Name]" or "Thank you, [Name]", the speaker is someone thanking [Name], NEVER [Name].
-   - When someone says "Because the last time I updated it, [Name] changed half the tasks...", the immediate rebuttal "Because half the tasks were wrong." is spoken by [Name] defending their action!
+   - FLOOR HANDOFFS & AGENDA PRESENTERS: When a speaker calls upon a participant by name to speak, update, present, or begin an agenda topic (e.g. "[Name], could you take us through the update?", "[Name], over to you", "Could you update us on this, [Name]?", "Let's hear from [Name]"), the IMMEDIATE NEXT turn responding or taking the floor (even if brief: "Sure.", "Thanks.", "Yeah, so...", "Right.", "Okay.") is spoken by [Name]! Attribute that turn as "[Name]:".
+   - QUESTIONS & TASKS: When someone is directly asked a question or assigned a task ("[Name], what is the status?"), the IMMEDIATE NEXT turn answering is spoken by [Name].
+   - DEFENDING ACTIONS & REBUTTALS: When someone says "Because the last time I updated it, [Name] changed half the tasks...", the immediate rebuttal "Because half the tasks were wrong." is spoken by [Name] defending their action!
+   - THIRD-PARTY MENTIONS VS ACTIVE PARTICIPANTS: Distinguish between non-attending third parties mentioned in passing (e.g. an external contact who will arrive later or sent apologies) versus participants directly addressed in the room who actively respond (e.g. "[Name], could you start?" -> "Sure, happy to" - [Name] is present and speaks!).
 
 2. FACILITATOR & TASK OWNERSHIP REASONING:
    - Identify the meeting facilitator/lead (e.g. who opens the meeting, calls on people, keeps track of time to finish before six, summarizes tasks, closes meeting).
@@ -248,8 +249,9 @@ SPEAKER IDENTIFICATION & DEDUCTION RULES:
      * Cross-reference stated responsibilities, task assignments, and domain discussions (e.g. frontend, backend/API, QA/testing, analytics, numbers/dashboard, reviews, scheduling) to attribute speakers consistently.
 
 3. UNKNOWN / UNCONFIRMED SPEAKERS:
-   - If a speaker's specific real name cannot be determined from conversational evidence, assign a consistent speaker label (e.g. "Speaker 1:", "Speaker 2:", etc.) keeping the same speaker label for turns spoken by the same unknown individual.
-   - NEVER invent or hallucinate names of people not mentioned in the dialogue. If unsure of their name, use "Speaker 1:", "Speaker 2:", etc.
+   - Only use generic speaker labels (e.g. "Speaker 1:", "Speaker 2:", etc.) if a speaker's real name genuinely cannot be determined from conversational evidence, introductions, direct address, or handoffs.
+   - When conversational evidence reveals a speaker's identity (such as being called on by name and responding), ALWAYS replace the generic tag with their real name.
+   - NEVER invent or hallucinate names of people not mentioned in the dialogue.
 
 4. STRICT VERBATIM PRESERVATION OF WORDS:
    - You MUST PRESERVE EVERY SINGLE SPOKEN WORD VERBATIM.

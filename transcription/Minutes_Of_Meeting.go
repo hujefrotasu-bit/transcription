@@ -270,14 +270,12 @@ The transcript provided at the end of this prompt is the ONLY source of truth. U
 Every extracted attendee, agenda topic, discussion point, decision, action item, owner, deadline, risk, and next-meeting detail MUST be directly grounded in the dialogue. If the transcript is silent or ambiguous, use null or [].
 Accuracy is more important than completeness. When uncertain, prefer omission or null over guessing. NEVER invent, assume, or hallucinate names, surnames, or titles not spoken in the transcript (e.g. if the transcript only gives an honorific or first name, do not guess or append an unstated surname).
 
-* STRICT TRANSCRIPT FORMATTING RULES (NO BRACKETS, NO EDITORIAL NOTES, NO RUN-ON PARAGRAPHS):
-  - Format each turn in the simple, standard format:
-    SpeakerName: Spoken text
-    (e.g. "Anna: Which department pays for it, though?", "Marcus: Now, you all know why I've called this meeting.")
-  - Every speaker turn MUST be placed on its OWN SEPARATE LINE separated by double newlines (\n\n). NEVER merge multiple turns into a single paragraph!
-  - NEVER put square brackets around speaker names (write "Marcus:" NOT "[Marcus]:", write "Anna:" NOT "[Anna]:", write "Speaker 1:" NOT "[Speaker 1]:").
-  - NEVER output editorial notes, explanations, or justifications in brackets (NEVER write "Marcus: [Speaker 5 speaking error in transcript/attribution context]" and NEVER write "[Marcus role/chairperson slip in transcript text]:"). Output ONLY the clean speaker name and verbatim spoken words!
-  - Speaker attribution must be 100%% accurate based on conversational evidence.
+* STRICT ATTENDEE & SPEAKER RESOLUTION RULES (NO BRACKETS, NO EDITORIAL NOTES):
+  - DEDUCE REAL NAMES FROM CONVERSATIONAL EVIDENCE:
+    Map each generic speaker label (e.g. "Speaker 1", "Speaker 2") to their real deduced name in "speaker_map".
+  - NEVER put square brackets around speaker names in "speaker_map", "attendees", or anywhere in the JSON (write "Marcus" NOT "[Marcus]", write "Anna" NOT "[Anna]").
+  - NEVER output editorial notes, explanations, or justifications in brackets (write clean names only, e.g. "Marcus", NOT "[Marcus role/chairperson slip in transcript text]").
+  - Speaker identification must be 100%% accurate based on conversational evidence and introductions.
 
 ==================================================
 2. ATTENDEES (STRICT PRESENCE & COMPLETE ROSTER RULE)
@@ -383,7 +381,6 @@ Return ONLY valid JSON matching this exact structure:
   "speaker_map": {
     "Generic Speaker Label": "Deduced Real Name"
   },
-  "named_transcript": "Full verbatim transcript with each speaker turn on its OWN SEPARATE LINE separated by double newlines (\\n\\n). Format strictly as: SpeakerName: Spoken text (e.g. Anna: Which department pays for it, though?). CRITICAL: (1) NEVER put square brackets around speaker names (write Marcus: NOT [Marcus]:). (2) NEVER output editorial notes, explanations, or justifications in brackets (NEVER write [Speaker 5 speaking error...] or [Marcus role/chairperson slip...]). (3) A speaker NEVER addresses or thanks themselves. (4) 100%% verbatim dialogue preserved in chronological order.",
   "meeting_minutes": {
     "meeting": {
       "title": null,
@@ -608,7 +605,17 @@ TRANSCRIPT
 	if len(result.SpeakerMap) > 0 {
 		for genericLabel, realName := range result.SpeakerMap {
 			genericLabel = strings.TrimSpace(genericLabel)
+			genericLabel = strings.TrimPrefix(genericLabel, "[")
+			genericLabel = strings.TrimSuffix(genericLabel, "]")
+			genericLabel = strings.TrimSuffix(genericLabel, ":")
+			genericLabel = strings.TrimSpace(genericLabel)
+
 			realName = strings.TrimSpace(realName)
+			realName = strings.TrimPrefix(realName, "[")
+			realName = strings.TrimSuffix(realName, "]")
+			realName = strings.TrimSuffix(realName, ":")
+			realName = strings.TrimSpace(realName)
+
 			if genericLabel == "" || realName == "" || strings.EqualFold(genericLabel, realName) {
 				continue
 			}

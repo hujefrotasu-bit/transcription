@@ -17,6 +17,7 @@ import (
 )
 
 func main() {
+	fileFlag := flag.String("file", "", "Specific audio or transcript file to benchmark (optional)")
 	dirFlag := flag.String("dir", "benchmark/testdata", "Directory containing audio and transcript files to benchmark")
 	workersFlag := flag.Int("workers", 8, "Number of concurrent worker threads (recommended: 4-8)")
 	auditFlag := flag.String("audit", "fable", "Audit mode: 'fable' (Live Claude Fable LLM QC audit)")
@@ -75,7 +76,12 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
-	summary, err := runner.RunFolder(ctx, *dirFlag)
+	var summary *benchmark.BulkBenchmarkSummary
+	if *fileFlag != "" {
+		summary, err = runner.RunFiles(ctx, []string{*fileFlag})
+	} else {
+		summary, err = runner.RunFolder(ctx, *dirFlag)
+	}
 	if err != nil {
 		log.Fatalf("ERROR: Benchmark execution failed: %v", err)
 	}

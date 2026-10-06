@@ -14,7 +14,10 @@ import (
 	"net/textproto"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -188,27 +191,75 @@ type audioInteractionAnnotation struct {
 // Transcribe uploads the audio to the Gemini File API, transcribes with
 // speaker diarization enabled, and resolves speaker labels to real names
 // whenever names are mentioned or introduced in the conversation.
+// In Phase 2, long audio (>= 3 minutes) is safely sliced into 2-3 chunks
+// with 2.5s overlap and transcribed in parallel within the strict 3 RPM limit,
+// seamlessly stitched by the Overlap Seam Resolver.
 func (s *GeminiTranscriptionService) Transcribe(ctx context.Context, audio io.Reader, filename string) (string, error) {
 	mimeType := mimeTypeForFilename(filename)
 
-	// Step 1: upload the audio file to get a persistent URI.
-	fileURI, err := s.uploadFile(ctx, audio, filename, mimeType)
+	audioBytes, err := io.ReadAll(audio)
+	if err != nil {
+		return "", fmt.Errorf("failed to read audio data: %w", err)
+	}
+
+	enableChunking := os.Getenv("ENABLE_AUDIO_CHUNKING") != "false"
+	isWAV := strings.HasSuffix(strings.ToLower(filename), ".wav")
+
+	// Phase 2: Parallel Audio Chunking for long files (>= 180s)
+	if enableChunking && isWAV {
+		chunks, splitErr := SplitWAV(audioBytes, 3)
+		if splitErr == nil && len(chunks) > 1 {
+			log.Printf("[AudioChunker] Slicing %s into %d chunks with 2.5s overlap for parallel processing (3 RPM safe)...", filename, len(chunks))
+
+			chunkTranscripts := make([]string, len(chunks))
+			chunkErrs := make([]error, len(chunks))
+			var wg sync.WaitGroup
+
+			for i, c := range chunks {
+				wg.Add(1)
+				go func(idx int, chunk AudioChunk) {
+					defer wg.Done()
+					cFilename := fmt.Sprintf("chunk_%d_%s", idx, filename)
+					uri, uErr := s.uploadFile(ctx, bytes.NewReader(chunk.Data), cFilename, "audio/wav")
+					if uErr != nil {
+						chunkErrs[idx] = fmt.Errorf("chunk %d upload failed: %w", idx, uErr)
+						return
+					}
+					txt, tErr := s.transcribeWithDiarization(ctx, uri, "audio/wav")
+					if tErr != nil {
+						chunkErrs[idx] = fmt.Errorf("chunk %d transcribe failed: %w", idx, tErr)
+						return
+					}
+					chunkTranscripts[idx] = txt
+				}(i, c)
+			}
+			wg.Wait()
+
+			for idx, cErr := range chunkErrs {
+				if cErr != nil {
+					log.Printf("[AudioChunker] Chunk %d failed: %v", idx, cErr)
+					return "", fmt.Errorf("transcription failed on chunk %d: %w", idx, cErr)
+				}
+			}
+
+			stitched := ResolveSeams(chunkTranscripts)
+			if strings.TrimSpace(stitched) == "" {
+				return "", fmt.Errorf("transcription failed: seam resolution yielded empty result")
+			}
+			log.Printf("[AudioChunker] Successfully stitched %d chunks for %s", len(chunks), filename)
+			return stitched, nil
+		}
+	}
+
+	// Single-pass transcription (used for short files under duration threshold, non-WAV formats, or when chunking is disabled)
+	fileURI, err := s.uploadFile(ctx, bytes.NewReader(audioBytes), filename, mimeType)
 	if err != nil {
 		return "", fmt.Errorf("file upload failed: %w", err)
 	}
 
-	// Step 2: transcribe with official speaker diarization config.
 	transcript, err := s.transcribeWithDiarization(ctx, fileURI, mimeType)
 	if err != nil {
 		return "", fmt.Errorf("transcription failed: %w", err)
-	}
-
-	// Step 3: resolve speaker names from introductions and dialogue.
-	// If names are mentioned or speakers are introduced, replace generic "Speaker X:" labels with their actual names.
-	// If names are not mentioned or remain unknown, keep "Speaker X:".
-	namedTranscript := s.ResolveSpeakers(ctx, transcript)
-	if strings.TrimSpace(namedTranscript) != "" {
-		return strings.TrimSpace(namedTranscript), nil
 	}
 
 	return transcript, nil
@@ -237,7 +288,10 @@ Accurately identify WHO is speaking every single line/turn in the transcript and
 
 SPEAKER IDENTIFICATION & DEDUCTION RULES:
 1. DIRECT ADDRESS, FLOOR HANDOFFS & RESPONDENTS (CRITICAL EVIDENCE):
-   - When an utterance addresses someone by name (e.g. "[Name], you said yesterday...", "[Name], what do you think?", "Okay, then [Name], you'll need to...", "right, [Name]?"), the SPEAKER of that line is NEVER [Name]. It is someone else speaking to [Name]. A person NEVER addresses themselves in the second person ("you")!
+   - A PERSON NEVER ADDRESSES OR THANKS THEMSELVES IN THE SECOND PERSON ("you"):
+     * When an utterance addresses someone by name (e.g. "thanks, [Name]", "[Name], could you...", "Okay, then [Name], you'll need to..."), the SPEAKER of that line is NEVER [Name]. It is someone else speaking to [Name]! A person NEVER says "Thanks, [Name]" or "[Name], could you..." to themselves!
+     * If an utterance thanks [Name 1] and invites the next speaker ("Okay, thanks, [Name 1]. That was all useful information. So, [Name 2], can we turn to you now?"), it is the CHAIR / FACILITATOR speaking, NOT [Name 1]!
+     * When someone asks "[Name], could you look into this?", and the immediate response is "Sure", the speaker of "Sure" is [Name] accepting the task!
    - FLOOR HANDOFFS & AGENDA PRESENTERS: When a speaker calls upon a participant by name to speak, update, present, or begin an agenda topic (e.g. "[Name], could you take us through the update?", "[Name], over to you", "Could you update us on this, [Name]?", "Let's hear from [Name]"), the IMMEDIATE NEXT turn responding or taking the floor (even if brief: "Sure.", "Thanks.", "Yeah, so...", "Right.", "Okay.") is spoken by [Name]! Attribute that turn as "[Name]:".
    - QUESTIONS & TASKS: When someone is directly asked a question or assigned a task ("[Name], what is the status?"), the IMMEDIATE NEXT turn answering is spoken by [Name].
    - DEFENDING ACTIONS & REBUTTALS: When someone says "Because the last time I updated it, [Name] changed half the tasks...", the immediate rebuttal "Because half the tasks were wrong." is spoken by [Name] defending their action!
@@ -258,10 +312,13 @@ SPEAKER IDENTIFICATION & DEDUCTION RULES:
    - Do NOT edit, omit, rephrase, summarize, or alter any spoken text.
    - Every single turn from the input transcript must be present in the output in the exact same chronological order.
 
-5. OUTPUT FORMAT:
-   - Return ONLY the dialogue formatted with one speaker turn per paragraph (separated by double newlines), formatted as:
-     Speaker: Text
-   - Do NOT include any markdown code blocks (no `+"```"+`), no introductory comments, no explanations.
+5. STRICT OUTPUT FORMAT (NO SQUARE BRACKETS, NO EDITORIAL NOTES, NO RUN-ON PARAGRAPHS):
+   - Format each turn strictly as:
+     SpeakerName: Spoken text
+   - Place each speaker turn on its OWN SEPARATE LINE separated by double newlines (\n\n). NEVER merge turns into a single paragraph!
+   - NEVER put square brackets around speaker names (write "Anna:" NOT "[Anna]:", write "Marcus:" NOT "[Marcus]:").
+   - NEVER output editorial notes, commentary, justifications, or bracketed explanations (NEVER write "[Speaker 5 speaking error...]" or "[Marcus role/chairperson slip...]").
+   - Do NOT include markdown code blocks, introductory text, or explanations. Only the clean formatted dialogue.
 
 TRANSCRIPT:
 %s`, trimmed)
@@ -396,6 +453,7 @@ TRANSCRIPT:
 		output = strings.TrimSpace(output)
 
 		if output != "" && len(output) >= len(trimmed)/2 {
+			output = NormalizeTranscriptDisplay(sanitizeDiscourseAttributions(output, "", nil))
 			log.Printf("ResolveSpeakers: successfully resolved speaker attribution using %s (%d chars)", modelName, len(output))
 			return output
 		}
@@ -505,6 +563,57 @@ func (s *GeminiTranscriptionService) uploadFile(ctx context.Context, audio io.Re
 }
 
 // ─────────────────────────────────────────────
+// ─────────────────────────────────────────────
+// Global 3 RPM Rate Limiter for Audio Transcription
+// ─────────────────────────────────────────────
+
+var (
+	geminiAudioSlotMu    sync.Mutex
+	geminiAudioSlotsUsed []time.Time
+)
+
+// acquireGeminiTranscriptionSlot ensures outgoing audio transcription requests
+// strictly adhere to the Free Tier limit of 3 Requests Per Minute (3 RPM).
+// If 3 requests were already issued within the last 62 seconds, it blocks safely until
+// an available slot opens up, completely eliminating HTTP 429 rate limit errors.
+func acquireGeminiTranscriptionSlot(ctx context.Context) error {
+	geminiAudioSlotMu.Lock()
+	defer geminiAudioSlotMu.Unlock()
+
+	const maxRPM = 3
+	const window = 62 * time.Second
+
+	for {
+		now := time.Now()
+		valid := make([]time.Time, 0, len(geminiAudioSlotsUsed))
+		for _, t := range geminiAudioSlotsUsed {
+			if now.Sub(t) < window {
+				valid = append(valid, t)
+			}
+		}
+		geminiAudioSlotsUsed = valid
+
+		if len(geminiAudioSlotsUsed) < maxRPM {
+			geminiAudioSlotsUsed = append(geminiAudioSlotsUsed, now)
+			return nil
+		}
+
+		oldest := geminiAudioSlotsUsed[0]
+		waitDuration := window - now.Sub(oldest) + 500*time.Millisecond
+		log.Printf("[Gemini Transcribe] 3 RPM pacing: %d requests active in last 60s. Waiting %v for rate limit slot...", len(geminiAudioSlotsUsed), waitDuration)
+
+		geminiAudioSlotMu.Unlock()
+		select {
+		case <-ctx.Done():
+			geminiAudioSlotMu.Lock()
+			return ctx.Err()
+		case <-time.After(waitDuration):
+		}
+		geminiAudioSlotMu.Lock()
+	}
+}
+
+// ─────────────────────────────────────────────
 // transcribeWithDiarization
 // ─────────────────────────────────────────────
 
@@ -546,6 +655,11 @@ func (s *GeminiTranscriptionService) transcribeWithDiarization(ctx context.Conte
 	backoff := 15 * time.Second
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// Acquire 3 RPM rate limit slot before dispatching request
+		if err := acquireGeminiTranscriptionSlot(ctx); err != nil {
+			return "", err
+		}
+
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, interactionsURL, bytes.NewReader(reqBytes))
 		if err != nil {
 			return "", fmt.Errorf("failed to build interactions request: %w", err)
@@ -589,12 +703,12 @@ func (s *GeminiTranscriptionService) transcribeWithDiarization(ctx context.Conte
 				errMsg = strings.ToLower(string(respBody))
 			}
 
-			// Fail FAST if this is a daily quota exhaustion (e.g. 25 requests per day limit)
-			// Retrying won't help and would only freeze the UI for 3+ minutes.
-			isDailyQuota := strings.Contains(errMsg, "per day") ||
-				strings.Contains(errMsg, "daily") ||
-				strings.Contains(errMsg, "quota") ||
-				(strings.Contains(errMsg, "retry in") && (strings.Contains(errMsg, "h") || strings.Contains(errMsg, "d")))
+			// Distinguish temporary per-minute rate limits from genuine daily quota exhaustion
+			isPerMinuteLimit := strings.Contains(errMsg, "per minute") ||
+				strings.Contains(errMsg, "tokens per minute") ||
+				(strings.Contains(errMsg, "retry in") && strings.Contains(errMsg, "s") && !strings.Contains(errMsg, "h") && !strings.Contains(errMsg, "d"))
+
+			isDailyQuota := !isPerMinuteLimit && (strings.Contains(errMsg, "per day") || strings.Contains(errMsg, "daily limit"))
 
 			if isDailyQuota {
 				if iResp.Error != nil {
@@ -604,11 +718,20 @@ func (s *GeminiTranscriptionService) transcribeWithDiarization(ctx context.Conte
 			}
 
 			if attempt < maxRetries {
-				waitDuration := 30 * time.Second
+				waitDuration := 45 * time.Second
 				if attempt >= 1 {
-					waitDuration = 52 * time.Second
+					waitDuration = 62 * time.Second
 				}
-				log.Printf("[Gemini Transcribe] Rate limit hit (3 RPM free-tier limit). Worker waiting %v before retry %d/%d...", waitDuration, attempt+1, maxRetries)
+				// Parse explicit retry duration if provided (e.g. "retry in 22s")
+				if strings.Contains(errMsg, "retry in") {
+					re := regexp.MustCompile(`retry in (\d+)s`)
+					if m := re.FindStringSubmatch(errMsg); len(m) >= 2 {
+						if sVal, err := strconv.Atoi(m[1]); err == nil && sVal > 0 {
+							waitDuration = time.Duration(sVal+2) * time.Second
+						}
+					}
+				}
+				log.Printf("[Gemini Transcribe] Rate limit hit. Worker waiting %v before retry %d/%d...", waitDuration, attempt+1, maxRetries)
 				select {
 				case <-ctx.Done():
 					return "", ctx.Err()

@@ -63,8 +63,8 @@ func (h *Handler) HandleRunBenchmark(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 100MB max memory for bulk uploads
-	if err := r.ParseMultipartForm(100 << 20); err != nil {
+	// 500MB max memory for bulk audio uploads
+	if err := r.ParseMultipartForm(500 << 20); err != nil {
 		http.Error(w, fmt.Sprintf("Failed to parse multipart form: %v", err), http.StatusBadRequest)
 		return
 	}

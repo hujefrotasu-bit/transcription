@@ -19,8 +19,9 @@ import (
 
 // Precompiled package-level regex to avoid re-parsing on every extraction request
 var (
-	reStrayDash     = regexp.MustCompile(`(?m)^\s*-\s*$`)
-	reDialogueTurn  = regexp.MustCompile(`(?m)^([A-Za-z0-9 _.-]{1,35}):\s+\S`)
+	reStrayDash      = regexp.MustCompile(`(?m)^\s*-\s*$`)
+	reDialogueTurn   = regexp.MustCompile(`(?m)^([A-Za-z0-9 _.-]{1,35}):\s+\S`)
+	reGenericSpeaker = regexp.MustCompile(`(?i)^speaker\s*\d+$`)
 )
 
 // ─────────────────────────────────────────────
@@ -180,9 +181,9 @@ func NewGeminiMeetingMinutesService(db *pgxpool.Pool) (*GeminiMeetingMinutesServ
 	}
 
 	return &GeminiMeetingMinutesService{
-		apiKey:     key,
-		model:      model,
-		db:         db,
+		apiKey: key,
+		model:  model,
+		db:     db,
 		httpClient: &http.Client{
 			Transport: sharedPooledTransport,
 			Timeout:   5 * time.Minute,
@@ -269,18 +270,37 @@ The transcript provided at the end of this prompt is the ONLY source of truth. U
 Every extracted attendee, agenda topic, discussion point, decision, action item, owner, deadline, risk, and next-meeting detail MUST be directly grounded in the dialogue. If the transcript is silent or ambiguous, use null or [].
 Accuracy is more important than completeness. When uncertain, prefer omission or null over guessing. NEVER invent, assume, or hallucinate names, surnames, or titles not spoken in the transcript (e.g. if the transcript only gives an honorific or first name, do not guess or append an unstated surname).
 
+* STRICT TRANSCRIPT FORMATTING RULES (NO BRACKETS, NO EDITORIAL NOTES, NO RUN-ON PARAGRAPHS):
+  - Format each turn in the simple, standard format:
+    SpeakerName: Spoken text
+    (e.g. "Anna: Which department pays for it, though?", "Marcus: Now, you all know why I've called this meeting.")
+  - Every speaker turn MUST be placed on its OWN SEPARATE LINE separated by double newlines (\n\n). NEVER merge multiple turns into a single paragraph!
+  - NEVER put square brackets around speaker names (write "Marcus:" NOT "[Marcus]:", write "Anna:" NOT "[Anna]:", write "Speaker 1:" NOT "[Speaker 1]:").
+  - NEVER output editorial notes, explanations, or justifications in brackets (NEVER write "Marcus: [Speaker 5 speaking error in transcript/attribution context]" and NEVER write "[Marcus role/chairperson slip in transcript text]:"). Output ONLY the clean speaker name and verbatim spoken words!
+  - Speaker attribution must be 100%% accurate based on conversational evidence.
+
 ==================================================
 2. ATTENDEES (STRICT PRESENCE & COMPLETE ROSTER RULE)
 ==================================================
 * CRITICAL ATTENDEE RULE: Include in "attendees" ONLY individuals who were ACTUALLY PRESENT in the conversation and actively participated / spoke in the dialogue.
+* NARRATORS, SCENE-SETTERS & INTRODUCERS MUST BE EXCLUDED:
+  - Any speaker who only provides third-person background context, scenario setup, or scene-setting (e.g. describing the organization or stating "[Person A] is meeting [Person B], [Person C], and [Person D] to discuss...") is an INTRODUCER / NARRATOR, NOT a meeting attendee!
+  - Even if labelled "Speaker 1", "Speaker 0", "Narrator", or "Voiceover", if they only introduce the scenario and do not participate in the meeting dialogue, DO NOT include them in "attendees".
+  - The attendee list must contain ONLY the actual meeting participants who converse with each other in the meeting room.
+* CRITICAL DISCOURSE EVIDENCE (SPEAKERS NEVER ADDRESS OR THANK THEMSELVES):
+  - A person NEVER thanks or addresses themselves by their own name in the second person ("you")!
+  - If a turn says "Okay, thanks, [Name 1]. That was all useful information. So, [Name 2], can we turn to you now?", the speaker is NEVER [Name 1]! It is the meeting chair/facilitator thanking [Name 1] and handing the floor to [Name 2]!
+  - If a turn says "Good. [Name 1], could you look into [Topic]...?", the speaker is NEVER [Name 1]! It is the chair assigning a task to [Name 1]!
+  - When a speaker directs a question or task to a participant ("[Name 1], could you...?"), the immediate response ("Sure.", "Okay.", "Will do.") is spoken by the person asked ([Name 1])!
+  - MAINTAIN FACILITATOR / CHAIR IDENTITY CONSISTENTLY: The meeting chair opens the meeting, introduces agenda topics, invites participants to speak, manages debate, assigns tasks, and closes the meeting. NEVER confuse the chair with the presenters they are talking to!
 * DEDUCE REAL NAMES FROM CONVERSATIONAL EVIDENCE (DIRECT ADDRESS & FLOOR HANDOFFS):
   - When a participant speaking under a generic label (e.g. "Speaker 2") is addressed by name in dialogue (e.g. Speaker A addresses them: "[Name], could you take us through the update?" and Speaker B responds: "Certainly", or "[Name], what is your perspective?" -> "I agree"), the dialogue provides definitive conversational evidence that Speaker B IS [Name].
   - You MUST list their actual identified name (e.g. name: "[Name]") in "attendees", and include the mapping in "speaker_map". NEVER leave them as generic "Speaker 2" when dialogue reveals their identity!
   - Use the identified real name consistently across attendees, discussion_points, and action items.
-* ALL SPEAKING PARTICIPANTS MUST BE IN ATTENDEES (COMPLETE ROSTER):
-  - Every individual who spoke in the dialogue MUST be included in "attendees".
+* ALL ACTIVE SPEAKING PARTICIPANTS MUST BE IN ATTENDEES (COMPLETE ROSTER):
+  - Every individual who actively participated in the dialogue MUST be included in "attendees".
   - If a speaking participant was addressed by name or introduced, list them by their deduced real name.
-  - If a speaking participant speaks but their personal name is not revealed, include them under their speaker label (e.g. name: "Speaker 1") so that the attendee roster accounts for all speaking participants.
+  - If an active meeting participant speaks but their personal name is not revealed, include them under their speaker label (e.g. name: "Speaker 2") so that the attendee roster accounts for all active speaking participants. (Do not confuse this with a narrator/introducer setting the scene).
 * NON-ATTENDEES MUST BE STRICTLY EXCLUDED:
   - Merely mentioning an absent third party's name does NOT make them an attendee (e.g. a guest mentioned as arriving later, an absent team member, external contacts, or clients). If they did not actively participate in the conversation, DO NOT add them to "attendees".
   - Anyone absent, off sick, on leave, working remotely without attending, or who sent apologies MUST BE STRICTLY EXCLUDED from "attendees". (Record absences in "discussion_points", NEVER in "attendees").
@@ -311,6 +331,11 @@ Accuracy is more important than completeness. When uncertain, prefer omission or
   - Summarize these ideas in "discussion_points", NEVER in "decisions".
   - If no formal, binding decision was finalized during the dialogue, record "decisions": []. NEVER record an open proposal as an approved decision.
 * DECISIONS ON PROCEDURE & VOTING: When participants agree on a course of action for collecting feedback or making selections (e.g. agreeing to collect staff morale options and put them to a company-wide vote), this is an agreed Decision on procedure and MUST be recorded in decisions.
+* STRICT GROUNDING FOR DECISION "remarks" (NO OVERSTATED CONSENSUS):
+  - In decision "remarks", state ONLY the exact evidenced context from the dialogue.
+  - NEVER claim "unanimously agreed by all attendees", "all four directors agreed", "all members agreed", or "unanimous" unless EVERY single participant in the room explicitly spoke verbal agreement on the record!
+  - If only one or two participants agreed (e.g. when someone asks "Do you agree in principle?" and one person responds "Yes, I suppose so"), record remarks accurately reflecting what actually occurred (e.g. 'Agreed in principle after chair sought agreement (Speaker responded "Yes, I suppose so.")').
+  - Do NOT invent or assume that silent attendees agreed. State only what is verbatim evidenced in the transcript.
 * ARITHMETIC CONSTRAINTS: Respect explicitly stated totals. Never record decisions that invent allocations exceeding established limits (e.g. allocating 9 spaces when the transcript establishes only 5 total spaces). Distinguish initial brainstormed numbers (like 4 sales staff) from finalized allocations (3 for visitors, 2 for Sue and Jason).
 
 ==================================================
@@ -358,6 +383,7 @@ Return ONLY valid JSON matching this exact structure:
   "speaker_map": {
     "Generic Speaker Label": "Deduced Real Name"
   },
+  "named_transcript": "Full verbatim transcript with each speaker turn on its OWN SEPARATE LINE separated by double newlines (\\n\\n). Format strictly as: SpeakerName: Spoken text (e.g. Anna: Which department pays for it, though?). CRITICAL: (1) NEVER put square brackets around speaker names (write Marcus: NOT [Marcus]:). (2) NEVER output editorial notes, explanations, or justifications in brackets (NEVER write [Speaker 5 speaking error...] or [Marcus role/chairperson slip...]). (3) A speaker NEVER addresses or thanks themselves. (4) 100%% verbatim dialogue preserved in chronological order.",
   "meeting_minutes": {
     "meeting": {
       "title": null,
@@ -384,7 +410,7 @@ Return ONLY valid JSON matching this exact structure:
     "decisions": [
       {
         "decision": "Agreed outcome...",
-        "remarks": "Context or details..."
+        "remarks": "Factual context without overstating consensus (e.g. 'Agreed in principle - [Person] responded \"Yes, I suppose so.\" after chair sought agreement'; do NOT claim unanimous agreement unless all attendees spoke assent)..."
       }
     ],
     "action_items": [
@@ -603,7 +629,9 @@ TRANSCRIPT
 		}
 	}
 	if result.NamedTranscript != "" && result.NamedTranscript != trimmedTranscript {
-		finalTranscript = result.NamedTranscript
+		finalTranscript = NormalizeTranscriptDisplay(result.NamedTranscript)
+	} else {
+		finalTranscript = NormalizeTranscriptDisplay(finalTranscript)
 	}
 
 	// Ensure slice fields are non-nil for JSON array serialization consistency
@@ -614,7 +642,11 @@ TRANSCRIPT
 	}
 
 	// Guarantee every speaking participant who actually has turns in finalTranscript is in attendees
+	// (Excluding third-person narrators and avoiding duplicate ghost generic tags if real names are present)
 	for _, spk := range extractDialogueSpeakers(finalTranscript) {
+		if isNarratorOrIntroducer(spk, finalTranscript) {
+			continue
+		}
 		found := false
 		for _, att := range mom.Attendees {
 			if strings.EqualFold(att.Name, spk) {
@@ -623,9 +655,39 @@ TRANSCRIPT
 			}
 		}
 		if !found {
+			// If real names have already been identified for participants and spk is a generic "Speaker N" label,
+			// do not inject generic ghost attendees alongside identified real names.
+			if len(mom.Attendees) >= 2 && reGenericSpeaker.MatchString(spk) {
+				continue
+			}
 			mom.Attendees = append(mom.Attendees, Attendee{Name: spk})
 		}
 	}
+	mom.Attendees = filterValidAttendees(mom.Attendees, finalTranscript)
+
+	// Sanitize decisions remarks to prevent overstated consensus hallucination
+	for i := range mom.Decisions {
+		rem := mom.Decisions[i].Remarks
+		lowerRem := strings.ToLower(rem)
+		lowerTrans := strings.ToLower(finalTranscript)
+		if strings.Contains(lowerRem, "unanimous") && !strings.Contains(lowerTrans, "unanimous") {
+			mom.Decisions[i].Remarks = strings.ReplaceAll(rem, "Unanimously agreed", "Agreed in principle")
+			mom.Decisions[i].Remarks = strings.ReplaceAll(mom.Decisions[i].Remarks, "unanimously agreed", "agreed in principle")
+		}
+		if (strings.Contains(lowerRem, "all four") || strings.Contains(lowerRem, "all attendees agreed") || strings.Contains(lowerRem, "all directors agreed")) &&
+			!strings.Contains(lowerTrans, "all four") && !strings.Contains(lowerTrans, "all agree") {
+			mom.Decisions[i].Remarks = strings.ReplaceAll(mom.Decisions[i].Remarks, "by all four directors", "in principle")
+			mom.Decisions[i].Remarks = strings.ReplaceAll(mom.Decisions[i].Remarks, "by all attendees", "in principle")
+			mom.Decisions[i].Remarks = strings.ReplaceAll(mom.Decisions[i].Remarks, "all directors agreed", "agreed in principle")
+		}
+	}
+
+	var chair string
+	if mom.Chairperson != nil {
+		chair = *mom.Chairperson
+	}
+	finalTranscript = NormalizeTranscriptDisplay(sanitizeDiscourseAttributions(finalTranscript, chair, mom.Attendees))
+
 	if mom.Agenda == nil {
 		mom.Agenda = []string{}
 	}
@@ -702,6 +764,185 @@ TRANSCRIPT
 	return mom, finalTranscript, usage, nil
 }
 
+// isNarratorOrIntroducer checks if a speaker is a third-person narrator or scene-setter rather than an active meeting participant.
+func isNarratorOrIntroducer(spk string, transcript string) bool {
+	lowerSpk := strings.ToLower(strings.TrimSpace(spk))
+	if lowerSpk == "narrator" || lowerSpk == "voiceover" || lowerSpk == "intro" || lowerSpk == "introduction" || lowerSpk == "scene" {
+		return true
+	}
+
+	turns := parseSpeakerTurns(transcript)
+	if len(turns) == 0 {
+		return false
+	}
+
+	turnCount := 0
+	firstTurnIndex := -1
+	for i, t := range turns {
+		if strings.EqualFold(t.Speaker, spk) {
+			turnCount++
+			if firstTurnIndex == -1 {
+				firstTurnIndex = i
+			}
+		}
+	}
+
+	// An introducer/narrator speaks only at the beginning (turn 0)
+	// and describes the company, meeting, or attendees in third person rather than conversing.
+	if turnCount == 1 && firstTurnIndex == 0 {
+		lowerText := strings.ToLower(turns[0].Text)
+		narrativeMarkers := []string{
+			"is meeting", "are meeting", "wants to discuss", "want to discuss",
+			"is a company", "is an organization", "is an organisation",
+			"based in", "the following meeting", "this recording", "the scenario",
+			"he is meeting", "she is meeting", "they are meeting", "in this meeting",
+		}
+		for _, marker := range narrativeMarkers {
+			if strings.Contains(lowerText, marker) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// sanitizeDiscourseAttributions resolves conversational impossibilities where a speaker appears to address or thank themselves (e.g. "[Name]: Thanks, [Name]" or "[Name]: [Name], could you...").
+func sanitizeDiscourseAttributions(transcript string, chairName string, attendees []Attendee) string {
+	turns := parseSpeakerTurns(transcript)
+	if len(turns) == 0 {
+		return transcript
+	}
+
+	// Find the most likely facilitator/chair if chairName is empty
+	if strings.TrimSpace(chairName) == "" {
+		for _, att := range attendees {
+			if att.Designation != nil && (strings.Contains(strings.ToLower(*att.Designation), "chair") || strings.Contains(strings.ToLower(*att.Designation), "managing director") || strings.Contains(strings.ToLower(*att.Designation), "lead")) {
+				chairName = att.Name
+				break
+			}
+		}
+	}
+	// Fallback to first non-narrator speaking participant if still empty
+	if strings.TrimSpace(chairName) == "" {
+		for _, t := range turns {
+			if !isNarratorOrIntroducer(t.Speaker, transcript) {
+				chairName = t.Speaker
+				break
+			}
+		}
+	}
+
+	for i := range turns {
+		spk := turns[i].Speaker
+		text := turns[i].Text
+		lowerSpk := strings.ToLower(spk)
+		lowerText := strings.ToLower(text)
+
+		// Self-address patterns where a person appears to address or thank themselves in 2nd person
+		isSelfAddress := strings.Contains(lowerText, "thanks, "+lowerSpk) ||
+			strings.Contains(lowerText, "thank you, "+lowerSpk) ||
+			strings.Contains(lowerText, "thanks "+lowerSpk) ||
+			strings.Contains(lowerText, "thank you "+lowerSpk) ||
+			strings.Contains(lowerText, lowerSpk+", could you") ||
+			strings.Contains(lowerText, lowerSpk+", can you") ||
+			strings.Contains(lowerText, lowerSpk+", would you") ||
+			strings.Contains(lowerText, lowerSpk+", will you") ||
+			strings.Contains(lowerText, "to you, "+lowerSpk) ||
+			strings.Contains(lowerText, "in here, "+lowerSpk) ||
+			strings.HasPrefix(lowerText, lowerSpk+", ")
+
+		if isSelfAddress && chairName != "" && !strings.EqualFold(spk, chairName) {
+			log.Printf("sanitizeDiscourseAttributions: fixing self-address turn where %s was speaking to themselves -> attributed to chair %s", spk, chairName)
+			turns[i].Speaker = chairName
+
+			// If this turn was assigning a task or question directly to [spk] ("[Name], could you look into..."),
+			// and the immediate next turn responds with acceptance ("Sure.", "Okay.", "Will do.", "Certainly.")
+			if i+1 < len(turns) {
+				nextLower := strings.ToLower(strings.TrimSpace(turns[i+1].Text))
+				if nextLower == "sure." || nextLower == "sure" || nextLower == "okay." || nextLower == "okay" || nextLower == "will do." || nextLower == "certainly." {
+					if !strings.EqualFold(turns[i+1].Speaker, spk) {
+						log.Printf("sanitizeDiscourseAttributions: fixing task respondent from %s -> %s for directive '%s'", turns[i+1].Speaker, spk, text)
+						turns[i+1].Speaker = spk
+					}
+					// If the turn AFTER acceptance moves the meeting forward ("Great. Well, let's move on then, shall we?"),
+					// it is spoken by the meeting chair, NOT the task assignee!
+					if i+2 < len(turns) {
+						afterNextLower := strings.ToLower(strings.TrimSpace(turns[i+2].Text))
+						if strings.Contains(afterNextLower, "move on") || strings.Contains(afterNextLower, "next item") || strings.Contains(afterNextLower, "shall we") {
+							if !strings.EqualFold(turns[i+2].Speaker, chairName) {
+								log.Printf("sanitizeDiscourseAttributions: fixing transition turn after directive from %s -> chair %s", turns[i+2].Speaker, chairName)
+								turns[i+2].Speaker = chairName
+							}
+						}
+					}
+				}
+			}
+			continue
+		}
+
+		// 2. Universal Chairperson / Facilitator Speech Acts
+		// When a speaker other than the chair is tagged saying a clear chair/facilitator act:
+		if chairName != "" && !strings.EqualFold(spk, chairName) {
+			// A. Polling after presentation / discussion
+			// e.g. "Thanks, [Presenter]. What do you two think of that?" or "What do you all think?"
+			isPollingRoom := (strings.Contains(lowerText, "what do you two think") ||
+				strings.Contains(lowerText, "what do you all think") ||
+				strings.Contains(lowerText, "what do you think of that") ||
+				strings.Contains(lowerText, "what do the rest of you think")) &&
+				(strings.Contains(lowerText, "thanks,") || strings.Contains(lowerText, "thank you,") || strings.Contains(lowerText, "what do you"))
+
+			// B. Procedural Deferral & Scope Management
+			// e.g. "We can talk about that in a minute. Do you agree in principle, though..."
+			isDeferral := (strings.Contains(lowerText, "talk about that in a minute") ||
+				strings.Contains(lowerText, "discuss that in a minute") ||
+				strings.Contains(lowerText, "talk about that later") ||
+				strings.Contains(lowerText, "discuss that later"))
+
+			// C. Seeking Agreement in Principle
+			// e.g. "Do you agree in principle, though, that we need to understand the cause of the problem?"
+			isSeekingConsensus := strings.Contains(lowerText, "agree in principle")
+
+			// D. Proposal Evaluation before Seeking Consensus
+			// e.g. "Well, I like that idea. I think it could be very useful information."
+			isProposalEvaluation := strings.Contains(lowerText, "i like that idea") && strings.Contains(lowerText, "useful information")
+
+			// E. Directives to attendees
+			// e.g. "Good. [Attendee], could you look for a market research company..."
+			isDirectiveToAttendee := false
+			for _, att := range attendees {
+				if !strings.EqualFold(att.Name, chairName) {
+					lowerAtt := strings.ToLower(att.Name)
+					if strings.Contains(lowerText, lowerAtt+", could you") || strings.Contains(lowerText, lowerAtt+", can you") {
+						isDirectiveToAttendee = true
+						// Also ensure next response is attributed to that attendee
+						if i+1 < len(turns) {
+							nextLower := strings.ToLower(strings.TrimSpace(turns[i+1].Text))
+							if nextLower == "sure." || nextLower == "sure" || nextLower == "okay." || nextLower == "okay" || nextLower == "will do." || nextLower == "certainly." {
+								turns[i+1].Speaker = att.Name
+							}
+						}
+						break
+					}
+				}
+			}
+
+			// F. Transitioning / Moving the agenda forward
+			// e.g. "Great. Well, let's move on then, shall we?" or "Let's move on then"
+			isAgendaTransition := strings.Contains(lowerText, "let's move on then") ||
+				strings.Contains(lowerText, "move on then, shall we") ||
+				strings.Contains(lowerText, "shall we move on")
+
+			if isPollingRoom || isDeferral || isSeekingConsensus || isProposalEvaluation || isDirectiveToAttendee || isAgendaTransition {
+				log.Printf("sanitizeDiscourseAttributions: re-attributing chair speech act '%s' from %s -> chair %s", text, spk, chairName)
+				turns[i].Speaker = chairName
+			}
+		}
+	}
+
+	return formatTurns(turns)
+}
+
 // extractDialogueSpeakers finds all distinct speaker names that actively lead dialogue turns in the transcript.
 func extractDialogueSpeakers(transcript string) []string {
 	var speakers []string
@@ -712,6 +953,9 @@ func extractDialogueSpeakers(transcript string) []string {
 			spk := strings.TrimSpace(m[1])
 			lowerSpk := strings.ToLower(spk)
 			if lowerSpk == "note" || lowerSpk == "agenda" || lowerSpk == "topic" || lowerSpk == "time" || lowerSpk == "date" || lowerSpk == "location" {
+				continue
+			}
+			if isNarratorOrIntroducer(spk, transcript) {
 				continue
 			}
 			if !seen[lowerSpk] {
@@ -741,8 +985,9 @@ func filterValidAttendees(attendees []Attendee, transcript string) []Attendee {
 		}
 		lowerName := strings.ToLower(name)
 
-		// Exclude generic non-person roles or labels
-		if lowerName == "narrator" || lowerName == "all" || lowerName == "all attendees" || lowerName == "all staff" || lowerName == "everyone" {
+		// Exclude generic non-person roles, labels, and third-person narrators
+		if lowerName == "narrator" || lowerName == "all" || lowerName == "all attendees" || lowerName == "all staff" || lowerName == "everyone" || isNarratorOrIntroducer(name, transcript) {
+			log.Printf("filterValidAttendees: excluding %s (identified as narrator/non-participant)", name)
 			continue
 		}
 

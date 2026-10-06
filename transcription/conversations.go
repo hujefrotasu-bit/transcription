@@ -436,13 +436,19 @@ func (h *ConversationHandler) processAudioBackground(id uuid.UUID, localFilePath
 
 	// Extract and save Meeting Minutes (with dynamic speaker name resolution).
 	if h.MinutesService != nil {
-		log.Printf("processAudioBackground: extracting meeting minutes for conversation %s", id)
-		mom, _, tokenUsage, mErr := h.MinutesService.ExtractAndSaveMeetingMinutes(ctx, id, transcript)
+		mom, namedTranscript, tokenUsage, mErr := h.MinutesService.ExtractAndSaveMeetingMinutes(ctx, id, transcript)
 		if mErr != nil {
 			log.Printf("processAudioBackground: meeting minutes extraction error for conversation %s: %v", id, mErr)
 			// Mark completed with the transcript we already have even if MoM failed
 			_, _ = h.DB.Exec(context.Background(), `UPDATE conversations SET status = 'completed' WHERE id = $1`, id)
 			return
+		}
+
+		if strings.TrimSpace(namedTranscript) != "" {
+			transcript = strings.TrimSpace(namedTranscript)
+			_, _ = h.DB.Exec(context.Background(), `UPDATE conversations SET transcript = $1, status = 'completed' WHERE id = $2`, transcript, id)
+		} else {
+			_, _ = h.DB.Exec(context.Background(), `UPDATE conversations SET status = 'completed' WHERE id = $1`, id)
 		}
 
 		// Automatically run Fable audit and version comparison unless verification was bypassed

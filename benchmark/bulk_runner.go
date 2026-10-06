@@ -39,20 +39,20 @@ type BenchmarkItemInput struct {
 
 // BenchmarkItemResult holds the evaluation metrics for a single processed file.
 type BenchmarkItemResult struct {
-	Filename         string                    `json:"filename"`
-	FileType         string                    `json:"file_type"` // "transcript" or "audio"
-	Difficulty       string                    `json:"difficulty"` // "Easy", "Medium", "Hard"
-	Duration         time.Duration             `json:"duration"`
-	DurationSeconds  float64                   `json:"duration_seconds"`
-	AuditScore       float64                   `json:"audit_score"`
-	AttendeesCount   int                       `json:"attendees_count"`
-	Attendees        []string                  `json:"attendees"`
-	ActionItemsCount int                       `json:"action_items_count"`
-	DecisionsCount   int                       `json:"decisions_count"`
-	DiscussionsCount int                       `json:"discussions_count"`
-	IssuesCount      int                       `json:"issues_count"`
-	ErrorsCount      int                       `json:"errors_count"`
-	Status           string                    `json:"status"` // "PASS" (>=80), "WARN" (70-79), "FAIL" (<70 or err)
+	Filename         string                        `json:"filename"`
+	FileType         string                        `json:"file_type"`  // "transcript" or "audio"
+	Difficulty       string                        `json:"difficulty"` // "Easy", "Medium", "Hard"
+	Duration         time.Duration                 `json:"duration"`
+	DurationSeconds  float64                       `json:"duration_seconds"`
+	AuditScore       float64                       `json:"audit_score"`
+	AttendeesCount   int                           `json:"attendees_count"`
+	Attendees        []string                      `json:"attendees"`
+	ActionItemsCount int                           `json:"action_items_count"`
+	DecisionsCount   int                           `json:"decisions_count"`
+	DiscussionsCount int                           `json:"discussions_count"`
+	IssuesCount      int                           `json:"issues_count"`
+	ErrorsCount      int                           `json:"errors_count"`
+	Status           string                        `json:"status"` // "PASS" (>=80), "WARN" (70-79), "FAIL" (<70 or err)
 	ErrorMessage     string                        `json:"error_message,omitempty"`
 	AuditReport      *verification.AuditResult     `json:"audit_report,omitempty"`
 	MeetingMinutes   *transcription.MeetingMinutes `json:"meeting_minutes,omitempty"`
@@ -381,8 +381,8 @@ func (r *BulkBenchmarkRunner) processSingleInput(ctx context.Context, input Benc
 		res.AuditScore = 0
 		res.ErrorsCount = 0
 		res.AuditReport = &verification.AuditResult{
-			Score:    0,
-			Verified: false,
+			Score:              0,
+			Verified:           false,
 			ImprovementSummary: "Verification audit skipped per execution settings (Direct Transcribe + MoM mode). Transcribed and structured directly via Gemini.",
 		}
 		return res

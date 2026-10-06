@@ -18,3 +18,7 @@ Thumbs.db
 
 # User uploads
 uploads/
+
+# Benchmark generated reports
+benchmark/reports/benchmark_*.csv
+benchmark/reports/benchmark_*.json
